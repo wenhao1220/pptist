@@ -14,6 +14,7 @@ ENV PORT=3000
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY server ./server
+COPY skills ./skills
 COPY --from=build /app/dist ./dist
 
 EXPOSE 3000
