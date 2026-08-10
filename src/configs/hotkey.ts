@@ -1,0 +1,150 @@
+export const enum KEYS {
+  C = 'C',
+  X = 'X',
+  Z = 'Z',
+  Y = 'Y',
+  A = 'A',
+  G = 'G',
+  L = 'L',
+  F = 'F',
+  D = 'D',
+  B = 'B',
+  P = 'P',
+  O = 'O',
+  R = 'R',
+  T = 'T',
+  MINUS = '-',
+  EQUAL = '=',
+  DIGIT_0 = '0',
+  DELETE = 'DELETE',
+  UP = 'ARROWUP',
+  DOWN = 'ARROWDOWN',
+  LEFT = 'ARROWLEFT',
+  RIGHT = 'ARROWRIGHT',
+  ENTER = 'ENTER',
+  SPACE = ' ',
+  TAB = 'TAB',
+  BACKSPACE = 'BACKSPACE',
+  ESC = 'ESCAPE',
+  PAGEUP = 'PAGEUP',
+  PAGEDOWN = 'PAGEDOWN',
+  F5 = 'F5',
+}
+
+interface HotkeyItem {
+  type: string
+  children: {
+    label: string
+    value?: string
+  }[] 
+}
+
+export const HOTKEY_DOC: HotkeyItem[] = [
+  {
+    type: '通用',
+    children: [
+      { label: '剪下', value: 'Ctrl + X' },
+      { label: '複製', value: 'Ctrl + C' },
+      { label: '貼上', value: 'Ctrl + V' },
+      { label: '貼上為純文本', value: 'Ctrl + Shift + V' },
+      { label: '快速複製貼上', value: 'Ctrl + D' },
+      { label: '全選', value: 'Ctrl + A' },
+      { label: '復原', value: 'Ctrl + Z' },
+      { label: '重做', value: 'Ctrl + Y' },
+      { label: '刪除', value: 'Delete / Backspace' },
+      { label: '多選', value: '按住 Ctrl 或 Shift' },
+      { label: '開啟搜尋替換', value: 'Ctrl + F' },
+      { label: '列印', value: 'Ctrl + P' },
+      { label: '關閉彈窗', value: 'ESC' },
+    ],
+  },
+  {
+    type: '投影片放映',
+    children: [
+      { label: '從頭開始放映投影片', value: 'F5' },
+      { label: '從當前開始放映投影片', value: 'Shift + F5' },
+      { label: '切換上一頁', value: '↑ / ← / PgUp' },
+      { label: '切換下一頁', value: '↓ / → / PgDown' },
+      { label: '切換下一頁', value: 'Enter / Space' },
+      { label: '退出放映', value: 'ESC' },
+    ],
+  },
+  {
+    type: '投影片編輯',
+    children: [
+      { label: '建立投影片', value: 'Enter' },
+      { label: '移動畫布', value: 'Space + 滑鼠拖拽' },
+      { label: '縮放畫布', value: 'Ctrl + 滑鼠滾輪' },
+      { label: '放大畫布', value: 'Ctrl + =' },
+      { label: '縮小畫布', value: 'Ctrl + -' },
+      { label: '使畫布適應當前螢幕', value: 'Ctrl + 0' },
+      { label: '上一頁（未選中元素）', value: '↑' },
+      { label: '下一頁（未選中元素）', value: '↓' },
+      { label: '上一頁', value: '滑鼠上滾 / PgUp' },
+      { label: '下一頁', value: '滑鼠下滾 / PgDown' },
+      { label: '快速建立文本', value: '雙擊空白處 / T' },
+      { label: '快速建立矩形', value: 'R' },
+      { label: '快速建立圓形', value: 'O' },
+      { label: '快速建立線條', value: 'L' },
+      { label: '退出繪製狀態', value: '滑鼠右鍵' },
+    ],
+  },
+  {
+    type: '元素操作',
+    children: [
+      { label: '移動', value: '↑ / ← / ↓ / →' },
+      { label: '鎖定', value: 'Ctrl + L' },
+      { label: '組合', value: 'Ctrl + G' },
+      { label: '取消組合', value: 'Ctrl + Shift + G' },
+      { label: '置頂層', value: 'Alt + F' },
+      { label: '置底層', value: 'Alt + B' },
+      { label: '鎖定寬高比例', value: '按住 Ctrl 或 Shift' },
+      { label: '快速複製', value: '按住 Ctrl + 拖拽' },
+      { label: '建立水平 / 垂直線條', value: '按住 Ctrl 或 Shift' },
+      { label: '切換焦點元素', value: 'Tab' },
+      { label: '確認圖片裁剪', value: 'Enter' },
+      { label: '完成自定義形狀繪製', value: 'Enter' },
+    ],
+  },
+  {
+    type: '表格編輯',
+    children: [
+      { label: '聚焦到下一個單元格', value: 'Tab' },
+      { label: '移動焦點單元格', value: '↑ / ← / ↓ / →' },
+      { label: '在上方插入一行', value: 'Ctrl + ↑' },
+      { label: '在下方插入一行', value: 'Ctrl + ↓' },
+      { label: '在左側插入一列', value: 'Ctrl + ←' },
+      { label: '在右側插入一列', value: 'Ctrl + →' },
+    ],
+  },
+  {
+    type: '圖表資料編輯',
+    children: [
+      { label: '聚焦到下一行', value: 'Enter' },
+    ],
+  },
+  {
+    type: '文本編輯',
+    children: [
+      { label: '加粗', value: 'Ctrl + B' },
+      { label: '斜體', value: 'Ctrl + I' },
+      { label: '下劃線', value: 'Ctrl + U' },
+      { label: '行內程式碼', value: 'Ctrl + E' },
+      { label: '上角標', value: 'Ctrl + ;' },
+      { label: '下角標', value: `Ctrl + '` },
+      { label: '選中段落', value: `ESC` },
+    ],
+  },
+  {
+    type: '其他快捷操作',
+    children: [
+      { label: '新增圖片 - 貼上來自系統剪貼簿的圖片' },
+      { label: '新增圖片 - 將本地圖片拖拽到畫布中' },
+      { label: '新增圖片 - 在畫布中貼上SVG程式碼' },
+      { label: '新增圖片 - 貼上來自 pexels 的圖片連結' },
+      { label: '新增文本 - 貼上來自系統剪貼簿的文字' },
+      { label: '新增文本 - 將外部選中文字拖拽到畫布中' },
+      { label: '文本編輯 - 支援 markdown 語法建立列表和引用' },
+    ],
+  },
+]

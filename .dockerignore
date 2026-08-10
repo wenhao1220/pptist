@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.env
+work
+skills-main
+server/last_blueprint.json
+server/last_stage1_blueprint.json
+*.log
+*.tsbuildinfo
