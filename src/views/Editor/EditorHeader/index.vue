@@ -58,6 +58,9 @@
       <div class="menu-item" v-tooltip="'匯出'" @click="setDialogForExport('pptx')">
         <i-icon-park-outline:download class="icon" />
       </div>
+      <div class="menu-item feedback-menu-item" v-tooltip="'問題回報'" @click="feedbackVisible = true">
+        <span class="feedback-label">問題回報</span>
+      </div>
     </div>
 
     <Drawer
@@ -70,11 +73,32 @@
     </Drawer>
 
     <FullscreenSpin :loading="exporting" tip="正在匯入..." />
+    <div v-if="feedbackVisible" class="feedback-backdrop" @click.self="closeFeedback">
+      <section class="feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+        <div class="feedback-dialog-header">
+          <div>
+            <h2 id="feedback-title">問題回報</h2>
+            <p>告訴我們你遇到的問題、建議或錯誤情況。</p>
+          </div>
+          <button class="feedback-close" type="button" aria-label="關閉" @click="closeFeedback">×</button>
+        </div>
+        <label for="feedback-message">問題或建議 <span>*</span></label>
+        <textarea id="feedback-message" v-model="feedbackMessage" maxlength="4000" placeholder="例如：操作步驟、預期結果、實際看到的狀況…"></textarea>
+        <label for="feedback-contact">聯絡方式（選填）</label>
+        <input id="feedback-contact" v-model="feedbackContact" maxlength="320" placeholder="Email、姓名或 Teams 帳號" />
+        <p v-if="feedbackStatus" :class="['feedback-status', feedbackStatus.type]">{{ feedbackStatus.text }}</p>
+        <div class="feedback-actions">
+          <button class="feedback-secondary" type="button" :disabled="feedbackSending" @click="closeFeedback">取消</button>
+          <button class="feedback-primary" type="button" :disabled="feedbackSending || !feedbackMessage.trim()" @click="submitFeedback">{{ feedbackSending ? '傳送中…' : '傳送回報' }}</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
 <script lang="ts" setup>
 import { nextTick, ref, useTemplateRef } from 'vue'
+import axios from 'axios'
 import { storeToRefs } from 'pinia'
 import { useMainStore, useSlidesStore } from '@/store'
 import useScreening from '@/hooks/useScreening'
@@ -90,6 +114,7 @@ import Input from '@/components/Input.vue'
 import Popover from '@/components/Popover.vue'
 import PopoverMenuItem from '@/components/PopoverMenuItem.vue'
 import Divider from '@/components/Divider.vue'
+import { aiApiUrl } from '@/utils/aiApi'
 
 const mainStore = useMainStore()
 const slidesStore = useSlidesStore()
@@ -103,6 +128,11 @@ const hotkeyDrawerVisible = ref(false)
 const editingTitle = ref(false)
 const titleValue = ref('')
 const titleInputRef = useTemplateRef<InstanceType<typeof Input>>('titleInputRef')
+const feedbackVisible = ref(false)
+const feedbackMessage = ref('')
+const feedbackContact = ref('')
+const feedbackSending = ref(false)
+const feedbackStatus = ref<{ type: 'success' | 'error', text: string } | null>(null)
 
 const startEditTitle = () => {
   titleValue.value = title.value
@@ -131,6 +161,32 @@ const openMarkupPanel = () => {
 
 const toggleAICopilot = () => {
   mainStore.setAICopilotPanelState(!mainStore.showAICopilotPanel)
+}
+
+const closeFeedback = () => {
+  if (feedbackSending.value) return
+  feedbackVisible.value = false
+  feedbackStatus.value = null
+}
+
+const submitFeedback = async () => {
+  if (!feedbackMessage.value.trim() || feedbackSending.value) return
+  feedbackSending.value = true
+  feedbackStatus.value = null
+  try {
+    await axios.post(aiApiUrl('/api/feedback'), {
+      message: feedbackMessage.value.trim(),
+      contact: feedbackContact.value.trim(),
+      pageTitle: title.value,
+    })
+    feedbackStatus.value = { type: 'success', text: '已送出，謝謝你的回報。' }
+    feedbackMessage.value = ''
+    feedbackContact.value = ''
+  } catch (error: any) {
+    feedbackStatus.value = { type: 'error', text: error?.response?.data?.error || '送出失敗，請稍後再試。' }
+  } finally {
+    feedbackSending.value = false
+  }
 }
 </script>
 
@@ -338,4 +394,82 @@ const toggleAICopilot = () => {
   display: inline-block;
   line-height: 1;
 }
+.feedback-menu-item .feedback-label {
+  color: #44546a;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.feedback-backdrop {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(17, 24, 39, 0.42);
+}
+.feedback-dialog {
+  width: min(480px, 100%);
+  border-radius: 12px;
+  padding: 24px;
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.28);
+
+  label {
+    display: block;
+    margin: 18px 0 7px;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 600;
+    span { color: #dc2626; }
+  }
+  textarea, input {
+    box-sizing: border-box;
+    width: 100%;
+    border: 1px solid #cbd5e1;
+    border-radius: 7px;
+    padding: 10px 12px;
+    color: #1e293b;
+    font: inherit;
+    outline: none;
+    &:focus { border-color: #4f8ef7; box-shadow: 0 0 0 3px rgba(79, 142, 247, 0.16); }
+  }
+  textarea { min-height: 120px; resize: vertical; }
+}
+.feedback-dialog-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  h2 { margin: 0; color: #1e293b; font-size: 20px; }
+  p { margin: 7px 0 0; color: #64748b; font-size: 13px; line-height: 1.5; }
+}
+.feedback-close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 24px;
+  line-height: 1;
+  &:hover { background: #f1f5f9; }
+}
+.feedback-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.feedback-actions button {
+  border: 0;
+  border-radius: 7px;
+  padding: 9px 15px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  &:disabled { cursor: not-allowed; opacity: 0.55; }
+}
+.feedback-secondary { background: #e2e8f0; color: #334155; }
+.feedback-primary { background: #2563eb; color: #fff; }
+.feedback-status { margin: 14px 0 0; font-size: 13px; }
+.feedback-status.success { color: #15803d; }
+.feedback-status.error { color: #dc2626; }
 </style>

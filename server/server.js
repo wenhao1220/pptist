@@ -24,6 +24,38 @@ app.use(express.json({ limit: '50mb' }));
 // 設定 multer 記憶體儲存，以便直接傳遞 buffer 給各個解析器
 const upload = multer({ storage: multer.memoryStorage() });
 
+app.post('/api/feedback', async (req, res) => {
+  const message = String(req.body?.message || '').trim();
+  const contact = String(req.body?.contact || '').trim();
+  const pageTitle = String(req.body?.pageTitle || '').trim();
+  const webhookUrl = String(process.env.GOOGLE_FEEDBACK_WEBHOOK_URL || '').trim();
+
+  if (!message) return res.status(400).json({ success: false, error: '請輸入問題或建議。' });
+  if (message.length > 4000 || contact.length > 320) {
+    return res.status(400).json({ success: false, error: '回報內容過長，請縮短後再送出。' });
+  }
+  if (!webhookUrl) {
+    return res.status(503).json({ success: false, error: '問題回報尚未完成設定，請聯絡管理員。' });
+  }
+
+  try {
+    await axios.post(webhookUrl, {
+      message,
+      contact,
+      pageTitle,
+      submittedAt: new Date().toISOString(),
+      token: process.env.GOOGLE_FEEDBACK_TOKEN || '',
+    }, {
+      timeout: 15000,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('[Server] Feedback delivery failed:', error.message);
+    return res.status(502).json({ success: false, error: '回報暫時無法送出，請稍後再試。' });
+  }
+});
+
 // =========================================================
 // 顏色名稱轉換輔助函式
 // =========================================================
