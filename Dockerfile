@@ -5,7 +5,7 @@ ENV PORT=3000
 ENV HUSKY=0
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund --ignore-scripts
 COPY server ./server
 COPY skills ./skills
 COPY dist ./dist
