@@ -281,6 +281,28 @@ function lockConfirmedPageCount(brief) {
   brief.strictFields = strictFields;
 }
 
+/**
+ * A requirement follow-up can be as short as "A" / "B" / "C". Do not
+ * rely on the model to reconnect that letter to the page-count question in
+ * chat history: normalize its answer before the downstream agents see it.
+ */
+function constrainPageCountFromReply(brief, reply) {
+  const answer = String(reply || '').trim();
+  let range = null;
+
+  if (/^(?:A|選項\s*A|1\s*[～~\-]\s*5\s*頁?)/i.test(answer)) range = [1, 5];
+  else if (/^(?:B|選項\s*B|6\s*[～~\-]\s*10\s*頁?)/i.test(answer)) range = [6, 10];
+  else if (/^(?:C|選項\s*C|11\s*頁?以上)/i.test(answer)) range = [11, Infinity];
+
+  if (!range) return;
+
+  const requested = Number.parseInt(String(brief?.pageCount || ''), 10);
+  const fallback = range[0] === 1 ? 5 : range[0] === 6 ? 8 : 11;
+  const resolved = Number.isFinite(requested) ? requested : fallback;
+  brief.pageCount = Math.min(range[1], Math.max(range[0], resolved));
+  lockConfirmedPageCount(brief);
+}
+
 function detectNativeTemplateProfile(prompt) {
   const text = String(prompt || '');
   if (/(?:科技藍圖)/i.test(text)) return 'pptist-tech-blue';
@@ -480,6 +502,9 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
 
       // 資訊充足：提取 brief
       const brief = navigatorResult.brief || {};
+      if (isNavigatorFollowup) {
+        constrainPageCountFromReply(brief, requirementPrompt);
+      }
       lockConfirmedPageCount(brief);
       const templateSelectionText = isNavigatorFollowup
         ? `${requirementPrompt}\n${filteredHistory.map(message => message.content).join('\n')}`
