@@ -65,7 +65,12 @@ function getNearestColorName(hex) {
 async function callBedrock(messages, systemPrompt = null, maxTokens = 8192) {
   const bedrockApiKey = process.env.BEDROCK_API_KEY;
   const bedrockRegion = process.env.BEDROCK_REGION || 'us-east-1';
-  const modelId = process.env.BEDROCK_MODEL_ID || 'us.anthropic.claude-3-5-sonnet-20241022-v2:0';
+  const configuredModelId = String(process.env.BEDROCK_MODEL_ID || '').trim();
+  // Railway users may enter the human-friendly model label. Bedrock endpoints
+  // require the fully qualified model ID, so keep that common value usable.
+  const modelId = /^(?:claude\s*)?3\.5\s*sonnet$/i.test(configuredModelId)
+    ? 'us.anthropic.claude-3-5-sonnet-20241022-v2:0'
+    : (configuredModelId || 'us.anthropic.claude-3-5-sonnet-20241022-v2:0');
 
   if (!bedrockApiKey) throw new Error('BEDROCK_API_KEY is not configured.');
 
