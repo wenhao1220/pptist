@@ -56,7 +56,7 @@ These principles borrow from proven human-in-the-loop authoring workflows — ad
 | `goal` | What outcome the deck should produce (persuade investors, teach a concept, report status, launch a product…) | **Mandatory** — blocks generation if not explicitly stated |
 | `audience` | Who is going to see/read it | **Mandatory** — blocks generation if not explicitly stated |
 | `tone` | Aesthetic/content direction — see the tailored-options pattern in §4 | **Mandatory first-round question when absent**, unless the user explicitly delegates the choice |
-| `pageCount` | Rough length | **Mandatory first-round question when absent** — never silently default to a fixed page count |
+| `pageCount` | Planned length | **Mandatory first-round question when absent** — offer `1～5 頁`, `6～10 頁`, `11 頁以上`, or `沒想法，請 AI 決定`; never silently default to a fixed page count |
 | `mustInclude` | Specific content the user already knows must appear | Medium — usually already present in the user's own message or uploaded file; only ask if truly unclear |
 | `dataNeeds` | Whether real data exists or the model may fabricate plausible figures | Low — default to "AI may fabricate plausible data", don't ask unless the user brings up real data |
 | `brandColor` | Specific brand/palette constraints | Low — default `null` (Content Strategist decides), don't ask unless mentioned |
@@ -98,7 +98,7 @@ Output exactly one of the two JSON shapes below. No markdown fences, no preamble
       "id": "pageCount",
       "question": "Roughly how long should it be?",
       "type": "single_select",
-      "options": ["Short (5 or fewer)", "Standard (6–10)", "Deep dive (10+)"]
+      "options": ["1～5 頁（精簡）", "6～10 頁（標準）", "11 頁以上（深入）", "沒想法，請 AI 決定"]
     }
   ]
 }
@@ -135,7 +135,7 @@ Output exactly one of the two JSON shapes below. No markdown fences, no preamble
 **Field rules:**
 - `topic` is **mandatory** and must be a complete, specific sentence Content Strategist can act on directly — not a verbatim copy of a two-word user message. If the user's own wording is already specific, reuse it; if it's thin, expand it using context you do have.
 - `goal`, `audience`, `tone`, `occasion` are strings. **On a new generation request, do not infer `goal` or `audience`: they must be explicitly supplied or asked in the one clarification round.** Do not let details from an earlier, separate deck satisfy these fields. **Do not infer `tone` on the first pass:** if it was not stated and the user did not explicitly delegate the decision, ask the required tailored style question instead. Once the user selects a style (or delegates it), record the confirmed/inferred result as a string.
-- `pageCount` is a number. If the user chooses “沒想法，請 AI 決定”, choose an appropriate number for this specific brief and record it in `assumptions`; never use a fixed default.
+- `pageCount` is a number. When the user chooses `1～5 頁`, `6～10 頁`, or `11 頁以上`, choose a suitable integer inside that range, never below its lower bound, and include `"pageCount"` in `strictFields` so downstream agents preserve the exact chosen number. If the user chooses “沒想法，請 AI 決定”, choose an appropriate number for this specific brief and record it in `assumptions`; never use a fixed default.
 - `mustInclude` is a string array; may be `[]` if nothing specific was flagged.
 - `dataNeeds` is a short string; default `"AI may fabricate plausible data"`.
 - `brandColor` may be `null` (Content Strategist decides). `language` should be filled if inferable from the user's input language (e.g. `"en"`, `"zh-TW"`); use `null` only if genuinely ambiguous.

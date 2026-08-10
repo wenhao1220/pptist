@@ -264,10 +264,21 @@ function getMandatoryRequirementQuestions(prompt, isRequirementFollowup) {
       id: 'pageCount',
       question: '這份簡報預計需要幾頁？',
       type: 'single_select',
-      options: ['5 頁（精簡）', '8 頁（標準）', '10 頁以上（深入）', '沒想法，請 AI 決定'],
+      options: ['1～5 頁（精簡）', '6～10 頁（標準）', '11 頁以上（深入）', '沒想法，請 AI 決定'],
     });
   }
   return questions;
+}
+
+/** Once a length has been confirmed, downstream agents must preserve it exactly. */
+function lockConfirmedPageCount(brief) {
+  const pageCount = Number.parseInt(String(brief?.pageCount || ''), 10);
+  if (!Number.isFinite(pageCount) || pageCount < 1) return;
+
+  brief.pageCount = pageCount;
+  const strictFields = Array.isArray(brief.strictFields) ? brief.strictFields : [];
+  if (!strictFields.includes('pageCount')) strictFields.push('pageCount');
+  brief.strictFields = strictFields;
 }
 
 function detectNativeTemplateProfile(prompt) {
@@ -469,6 +480,7 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
 
       // 資訊充足：提取 brief
       const brief = navigatorResult.brief || {};
+      lockConfirmedPageCount(brief);
       const templateSelectionText = isNavigatorFollowup
         ? `${requirementPrompt}\n${filteredHistory.map(message => message.content).join('\n')}`
         : requirementPrompt;
