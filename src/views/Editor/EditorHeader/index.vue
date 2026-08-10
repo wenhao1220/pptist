@@ -84,8 +84,6 @@
         </div>
         <label for="feedback-message">問題或建議 <span>*</span></label>
         <textarea id="feedback-message" v-model="feedbackMessage" maxlength="4000" placeholder="例如：操作步驟、預期結果、實際看到的狀況…"></textarea>
-        <label for="feedback-contact">聯絡方式（選填）</label>
-        <input id="feedback-contact" v-model="feedbackContact" maxlength="320" placeholder="Email、姓名或 Teams 帳號" />
         <p v-if="feedbackStatus" :class="['feedback-status', feedbackStatus.type]">{{ feedbackStatus.text }}</p>
         <div class="feedback-actions">
           <button class="feedback-secondary" type="button" :disabled="feedbackSending" @click="closeFeedback">取消</button>
@@ -130,7 +128,6 @@ const titleValue = ref('')
 const titleInputRef = useTemplateRef<InstanceType<typeof Input>>('titleInputRef')
 const feedbackVisible = ref(false)
 const feedbackMessage = ref('')
-const feedbackContact = ref('')
 const feedbackSending = ref(false)
 const feedbackStatus = ref<{ type: 'success' | 'error', text: string } | null>(null)
 
@@ -176,12 +173,10 @@ const submitFeedback = async () => {
   try {
     await axios.post(aiApiUrl('/api/feedback'), {
       message: feedbackMessage.value.trim(),
-      contact: feedbackContact.value.trim(),
       pageTitle: title.value,
     })
     feedbackStatus.value = { type: 'success', text: '已送出，謝謝你的回報。' }
     feedbackMessage.value = ''
-    feedbackContact.value = ''
   } catch (error: any) {
     feedbackStatus.value = { type: 'error', text: error?.response?.data?.error || '送出失敗，請稍後再試。' }
   } finally {

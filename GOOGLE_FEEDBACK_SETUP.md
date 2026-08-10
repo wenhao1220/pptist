@@ -21,12 +21,11 @@ function doPost(e) {
 
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['時間', '問題或建議', '聯絡方式', '簡報名稱']);
+    sheet.appendRow(['時間', '問題或建議', '簡報名稱']);
   }
   sheet.appendRow([
     data.submittedAt || new Date().toISOString(),
     data.message || '',
-    data.contact || '',
     data.pageTitle || '',
   ]);
 

@@ -26,12 +26,11 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 app.post('/api/feedback', async (req, res) => {
   const message = String(req.body?.message || '').trim();
-  const contact = String(req.body?.contact || '').trim();
   const pageTitle = String(req.body?.pageTitle || '').trim();
   const webhookUrl = String(process.env.GOOGLE_FEEDBACK_WEBHOOK_URL || '').trim();
 
   if (!message) return res.status(400).json({ success: false, error: '請輸入問題或建議。' });
-  if (message.length > 4000 || contact.length > 320) {
+  if (message.length > 4000) {
     return res.status(400).json({ success: false, error: '回報內容過長，請縮短後再送出。' });
   }
   if (!webhookUrl) {
@@ -41,7 +40,6 @@ app.post('/api/feedback', async (req, res) => {
   try {
     await axios.post(webhookUrl, {
       message,
-      contact,
       pageTitle,
       submittedAt: new Date().toISOString(),
       token: process.env.GOOGLE_FEEDBACK_TOKEN || '',
