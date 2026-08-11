@@ -221,7 +221,7 @@ export default function useDynamicAIPPT() {
         const addFixedText = (left: number, top: number, width: number, height: number, content: string, fontSize: number, color: string, bold = false, align = 'left') => {
           elements.push({
             type: 'text', id: createId(), left, top, width, height,
-            content: `<p style="text-align: ${align};"><span style="font-size: ${fontSize}px; ${bold ? 'font-weight: bold;' : ''} color: ${color};">${content}</span></p>`,
+            content: `<p style="margin: 0; line-height: 1.2; text-align: ${align};"><span style="font-size: ${fontSize}px; ${bold ? 'font-weight: bold;' : ''} color: ${color};">${content}</span></p>`,
             defaultFontName: theme.typography?.zh || 'Microsoft JhengHei', defaultColor: color, rotate: 0,
           } as PPTTextElement);
         };
@@ -264,6 +264,135 @@ export default function useDynamicAIPPT() {
         rawElements = [];
       }
 
+      // Keep chart source notes readable and unframed. The rest of a DataEco
+      // chart's composition remains AI-driven: forcing a left narrative card
+      // when the blueprint has no matching narrative content creates a worse
+      // empty-column failure than the occasional imperfect placement.
+      if (isDataEco && spec.templateId === 'dataeco-chart') {
+        const chartElement = rawElements.find((el: any) => el.type === 'chart');
+        rawElements.forEach((el: any) => {
+          if (el.type !== 'text' || !/(?:sample data|illustrative|範例數據|僅供說明)/i.test(String(el.content || ''))) return;
+          const chartLeft = Number(chartElement?.left) || 520;
+          const chartTop = Number(chartElement?.top) || 150;
+          const chartHeight = Number(chartElement?.height) || 300;
+          const chartWidth = Number(chartElement?.width) || 360;
+          delete el.cardBg;
+          el.left = chartLeft;
+          el.top = Math.min(500, chartTop + chartHeight + 10);
+          el.width = chartWidth;
+          el.height = 20;
+          el.fontSize = Math.max(12, Number(el.fontSize) || 0);
+          el.fontScale = el.fontScale === 'sm' ? undefined : el.fontScale;
+        });
+      }
+
+      // Layout models occasionally emit a table summary as two independent
+      // elements: a wide, empty rectangle and a nearby text box. Pair those
+      // elements before any other table normalization so the background and
+      // copy can never drift apart. This works for every theme/template.
+      if (rawElements.some((el: any) => el.type === 'table')) {
+        const tableElement = rawElements.find((el: any) => el.type === 'table');
+        const tableBottom = (Number(tableElement?.top) || 145) + (Number(tableElement?.height) || 230);
+        const detachedBands = rawElements.filter((el: any) => el.type === 'shape' &&
+          (Number(el.top) || 0) > tableBottom &&
+          (Number(el.width) || 0) >= 450 &&
+          (Number(el.height) || 0) >= 28 && (Number(el.height) || 0) <= 120);
+
+        detachedBands.forEach((band: any) => {
+          const bandLeft = Number(band.left) || 0;
+          const bandTop = Number(band.top) || 0;
+          const bandWidth = Number(band.width) || 0;
+          const bandHeight = Number(band.height) || 0;
+          const text = rawElements.find((el: any) => ['text', 'bullets'].includes(el.type) &&
+            (Number(el.top) || 0) >= bandTop - 6 &&
+            (Number(el.top) || 0) <= bandTop + bandHeight + 70 &&
+            (Number(el.left) || 0) < bandLeft + bandWidth &&
+            (Number(el.left) || 0) + (Number(el.width) || 0) > bandLeft);
+          if (!text) return;
+
+          text.left = bandLeft;
+          text.top = bandTop;
+          text.width = bandWidth;
+          text.height = bandHeight;
+          text.cardBg = safeColor(band.fill, '') || text.cardBg || slideSurface;
+          text.verticalAlign = 'middle';
+          text.fontSize = Math.max(15, Number(text.fontSize) || 0);
+          rawElements = rawElements.filter((el: any) => el !== band);
+        });
+      }
+
+      // Every comparison-table slide gets a stable closing hierarchy:
+      // table → unframed illustrative-data note → one readable summary band.
+      // This is deliberately content-driven rather than DataEco-only, because
+      // all template modes can receive a model output that splits a summary
+      // rectangle from its text.
+      if (rawElements.some((el: any) => el.type === 'table')) {
+        const tableElement = rawElements.find((el: any) => el.type === 'table');
+        const tableBottom = (Number(tableElement?.top) || 145) + (Number(tableElement?.height) || 230);
+        const bottomCandidates = rawElements.filter((el: any) =>
+          ['text', 'bullets', 'card'].includes(el.type) && (Number(el.top) || 0) > tableBottom);
+        const isIllustrative = (el: any) => /(?:sample data|illustrative|範例數據|示例數據|僅供說明|僅供參考)/i.test(String(el.content || ''));
+        const illustrativeNote = bottomCandidates.find(isIllustrative);
+        const summarySource = [...bottomCandidates]
+          .filter(el => el !== illustrativeNote)
+          .sort((a, b) => (Number(b.top) || 0) - (Number(a.top) || 0))[0];
+        const copyFrom = (el: any) => {
+          if (!el) return '';
+          if (Array.isArray(el.content)) return el.content.map((item: any) => String(item)).join('　');
+          if (el.type === 'card' && typeof el.content === 'object') return String(el.content.text || el.content.title || '');
+          return String(el.content || '');
+        };
+        const noteText = copyFrom(illustrativeNote);
+        const summaryText = copyFrom(summarySource);
+
+        // Some blueprints emit the summary rectangle and summary text as
+        // separate objects. Remove all trailing source objects and rebuild a
+        // single paired note/band structure, so an empty band is impossible.
+        rawElements = rawElements.filter((el: any) => {
+          const isTrailingCopy = bottomCandidates.includes(el);
+          const isTrailingShape = el.type === 'shape' && (Number(el.top) || 0) > tableBottom;
+          return !isTrailingCopy && !isTrailingShape;
+        });
+
+        if (noteText) {
+          rawElements.push({
+            type: 'text', content: noteText, left: 120,
+            top: Math.min(405, tableBottom + 22), width: 360, height: 22,
+            fontSize: 12,
+          });
+        }
+        if (summaryText) {
+          rawElements.push({
+            type: 'text', content: summaryText, left: 105,
+            top: Math.min(475, tableBottom + 105), width: 830, height: 52,
+            cardBg: isDataEco ? slideSurface : tinycolor.mix(pal.primary, '#FFFFFF', 92).toHexString(),
+            verticalAlign: 'middle', fontSize: 15,
+          });
+        }
+      }
+
+      // Process and timeline cards often contain only a few useful lines. A
+      // fixed brand card should centre those lines, not leave them stranded at
+      // the top with a large accidental empty area underneath.
+      if (isDataEco && ['dataeco-process', 'dataeco-timeline', 'dataeco-kpi'].includes(spec.templateId)) {
+        rawElements.forEach((el: any) => {
+          const isCardCopy = !!el.cardBg && ['text', 'bullets'].includes(el.type);
+          if (isCardCopy) {
+            el.verticalAlign = 'middle';
+            const minimum = el.type === 'bullets' ? 16 : 15;
+            el.fontSize = Math.max(minimum, Number(el.fontSize) || 0);
+          }
+          const isFooterNote = ['text', 'bullets'].includes(el.type) &&
+            (Number(el.top) || 0) >= 420 && (Number(el.width) || 0) >= 500;
+          if (isFooterNote) {
+            el.top = Math.min(470, Number(el.top) || 440);
+            el.height = Math.min(38, Number(el.height) || 30);
+            el.verticalAlign = 'middle';
+            el.fontSize = Math.max(12, Number(el.fontSize) || 0);
+          }
+        });
+      }
+
       // DataEco 的識別元素由渲染層固定產生，而不是讓模型以任意矩形自行猜測。
       // 這些元素位於內容之下，且不參與文字碰撞計算。
       // templateId is the primary reusable-layout contract. brandChrome is
@@ -300,6 +429,17 @@ export default function useDynamicAIPPT() {
           viewBox: [200, 200], path: 'M 100 0 A 100 100 0 1 1 99.999 0 Z', fill: arcColor,
           outline: { color: arcColor, width: 0, style: 'solid' }, rotate: 0, fixedRatio: false,
           } as PPTShapeElement);
+      }
+      // The DataEco source template carries the Cathay tree as a fixed
+      // bottom-left brand mark. Keep it out of the model's element list so
+      // every generated DataEco slide receives the same authentic chrome.
+      if (isDataEco) {
+        const treeOnDarkSurface = brandChrome === 'contentRail' || isDark(bg);
+        elements.push({
+          type: 'image', id: createId(), left: 15, top: H - 51, width: 35, height: 28,
+          src: treeOnDarkSurface ? '/assets/dataeco-tree-white.png' : '/assets/dataeco-tree-green.png',
+          fixedRatio: true, rotate: 0, lock: false, imageType: 'background',
+        } as PPTImageElement);
       }
 
       // The four native-template modes use restrained, repeatable chrome so
@@ -506,7 +646,7 @@ export default function useDynamicAIPPT() {
           elements.push({
             type: 'text', id: createId(),
             left: textLeft, top: textTop, width: textWidth, height: textHeight,
-            content: `<p style="text-align: ${align};"><span style="font-size: ${fontSize}px; ${bold ? 'font-weight: bold;' : ''} color: ${color};">${el.content || ''}</span></p>`,
+            content: `<p style="margin: 0; line-height: 1.2; text-align: ${align};"><span style="font-size: ${fontSize}px; ${bold ? 'font-weight: bold;' : ''} color: ${color};">${el.content || ''}</span></p>`,
             defaultFontName: fontFamily, defaultColor: color, rotate: 0,
           } as PPTTextElement);
         }
@@ -625,7 +765,7 @@ export default function useDynamicAIPPT() {
             elements.push({
               type: 'text', id: createId(),
               left: ICON_X, top: ICON_Y, width: ICON_SIZE, height: ICON_SIZE,
-              content: `<p style="text-align: center;"><span style="font-size: 26px; color: #FFFFFF;">${symbol}</span></p>`,
+              content: `<p style="margin: 0; line-height: 1; text-align: center;"><span style="font-size: 26px; color: #FFFFFF;">${symbol}</span></p>`,
               defaultFontName: 'Arial', defaultColor: '#FFFFFF', rotate: 0,
             } as PPTTextElement);
           }
@@ -633,7 +773,7 @@ export default function useDynamicAIPPT() {
           elements.push({
             type: 'text', id: createId(),
             left: left + 8, top: TITLE_TOP, width: width - 16, height: TITLE_H,
-            content: `<p style="text-align: center;"><span style="font-size: 16px; font-weight: bold; color: ${titleColor};">${cardTitle}</span></p>`,
+            content: `<p style="margin: 0; line-height: 1.2; text-align: center;"><span style="font-size: 16px; font-weight: bold; color: ${titleColor};">${cardTitle}</span></p>`,
             defaultFontName: cardFontFamily, defaultColor: titleColor, rotate: 0,
           } as PPTTextElement);
 
@@ -641,7 +781,7 @@ export default function useDynamicAIPPT() {
             elements.push({
               type: 'text', id: createId(),
               left: left + 8, top: TEXT_TOP, width: width - 16, height: TEXT_H,
-              content: `<p style="text-align: center;"><span style="font-size: 13px; color: ${textColor};">${cardText}</span></p>`,
+              content: `<p style="margin: 0; line-height: 1.25; text-align: center;"><span style="font-size: 13px; color: ${textColor};">${cardText}</span></p>`,
               defaultFontName: cardFontFamily, defaultColor: textColor, rotate: 0,
             } as PPTTextElement);
           }

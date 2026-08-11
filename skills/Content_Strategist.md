@@ -271,7 +271,20 @@ You may only output valid JSON matching the structure below — no Markdown fenc
 - [ ] Does every item in the Brief's `mustInclude` actually show up somewhere in the outline?
 - [ ] If `"pageCount"` is in `strictFields`, does the slide count match exactly?
 
-## 11. DataEco / 國泰 Brand Mode Extension
+## 11. Audience Strategy Contract
+
+Read `Brief.audience` as a combined audience-and-default-expression choice. It must affect the outline; never reduce it to a visible label. `Brief.presentationStyle` is optional and exists only when the user explicitly requested a different expression approach.
+
+**Actual audience rules**
+
+- `同事`: retain implementation context, concrete working methods, ownership, dependencies, and enough detail for discussion and follow-up. Prefer practical process, comparison, and action pages over executive-only headline metrics.
+- `主管`: lead with progress and the answer, then show resolution options, measurable outcomes, risk, resource implication, and a clear decision or support request. Use fewer but more decision-relevant pages; every chart needs an explicit implication.
+- `協理／高階主管`: compress aggressively to strategic impact, commercial value, material trade-offs, return, and the one decision required. Prioritize a small number of headline KPIs and recommendation pages; omit operational mechanics unless they change the decision.
+- `外部演講`: make the story self-contained for people without internal context. Use a clear hook, simple language, illustrative examples, and a memorable close; avoid confidential internal detail and unexplained acronyms.
+
+When the user explicitly supplies `presentationStyle`, retain the audience's appropriate level of detail and confidentiality, but use the requested strategy's narrative order, emphasis, and visual pacing. For example, `主管` + `客戶提案型` is an executive-ready proposal: concise decision metrics and risks, framed around stakeholder pain, value, proof, and a recommended action.
+
+## 12. DataEco / 國泰 Brand Mode Extension
 
 When `Brief.brandProfile === "dataeco"`, use the fixed DataEco template system below. This overrides free color invention and ordinary visual-style suggestions.
 

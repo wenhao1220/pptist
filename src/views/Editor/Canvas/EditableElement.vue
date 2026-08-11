@@ -28,6 +28,7 @@ import useOrderElement from '@/hooks/useOrderElement'
 import useAlignElementToCanvas from '@/hooks/useAlignElementToCanvas'
 import useCopyAndPasteElement from '@/hooks/useCopyAndPasteElement'
 import useSelectElement from '@/hooks/useSelectElement'
+import { useMainStore } from '@/store'
 
 import { ElementOrderCommands, ElementAlignCommands } from '@/types/edit'
 
@@ -71,6 +72,19 @@ const { deleteElement } = useDeleteElement()
 const { lockElement, unlockElement } = useLockElement()
 const { copyElement, pasteElement, cutElement } = useCopyAndPasteElement()
 const { selectAllElements } = useSelectElement()
+const mainStore = useMainStore()
+
+const requestAIElementEdit = () => {
+  const instruction = window.prompt('請說明要如何修正這個元件：')
+  if (!instruction?.trim()) return
+
+  mainStore.setActiveElementIdList([props.elementInfo.id])
+  mainStore.setAIElementEditRequest({
+    elementId: props.elementInfo.id,
+    instruction: instruction.trim(),
+  })
+  mainStore.setAICopilotPanelState(true)
+}
 
 const contextmenus = (): ContextmenuItem[] => {
   if (props.elementInfo.lock) {
@@ -81,6 +95,11 @@ const contextmenus = (): ContextmenuItem[] => {
   }
 
   return [
+    {
+      text: 'AI 修正',
+      handler: requestAIElementEdit,
+    },
+    { divider: true },
     {
       text: '剪下',
       subText: 'Ctrl + X',

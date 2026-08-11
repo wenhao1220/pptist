@@ -327,7 +327,19 @@ If the rendering engine's transition/animation features are enabled for this dec
 - [ ] On a cover slide (Layout A), write down the `left` value for title, subtitle, and overview text side by side — are they the exact same number?
 - [ ] Inside any card/container, does the content block (with gaps) reach at least 65% of the card's inner height — not just "look distributed"?
 
-## 13. DataEco / 國泰 Brand Mode Extension
+## 13. Audience-Aware Layout Contract
+
+The upstream semantic outline carries `audience` as a combined audience-and-default-expression choice. Preserve its intent through layout density and emphasis; do not turn it into a visible label. `presentationStyle` is optional and only applies when the user explicitly requested it.
+
+- For `同事`, allow a moderately denser working layout with clear concrete methods, owner / process / dependency groupings, readable comparison tables, and practical action steps.
+- For `主管`, give the top third of each decision page to progress, the takeaway, or a KPI; keep resolution options, outcomes, risks, and the required decision visually distinct. Charts must reserve a separate insight zone rather than becoming decoration.
+- For `協理／高階主管`, use the most economical composition: a decisive headline, 1–3 large measures of strategic or commercial value, and one recommendation / decision block. Reduce decorative elements and operational detail.
+- For `外部演講`, increase whitespace, use larger explanatory visuals, fewer text blocks, and clear narrative sequencing. Avoid dashboard-like density.
+- When an explicit `客戶提案型` override is present, prioritize a visual problem → value → proof → action cadence. Make value claims and evidence more prominent than internal process labels; retain the actual audience's appropriate information density.
+- When an explicit `內部決策型` override is present, give KPI, risk, comparison, and action/decision elements a stable hierarchy; use charts/tables when they help make a decision, not merely to fill space.
+- When an explicit `外部演講型` override is present, favor a strong hook, simplified diagram/chart composition, and a memorable close. Do not add dense executive tables unless the actual audience explicitly requires them.
+
+## 14. DataEco / 國泰 Brand Mode Extension
 
 When the semantic outline root has `brandProfile: "dataeco"`, preserve it at the root of your output and obey these template rules. This is a fixed brand system, not a generic green theme.
 
@@ -336,6 +348,9 @@ When the semantic outline root has `brandProfile: "dataeco"`, preserve it at the
 - Preserve each Semantic slide's `templateId` unchanged in the layout JSON. It is a required frontend rendering contract, not a display label.
 - Use the fixed DataEco template recipes: `dataeco-cover` uses `coverArc`; `dataeco-toc`, `dataeco-content`, `dataeco-chart`, `dataeco-table`, `dataeco-kpi`, `dataeco-process`, `dataeco-timeline`, `dataeco-why-how-what`, and `dataeco-image-split` use `contentRail`; `dataeco-closing` uses `closingArc`.
 - For `dataeco-toc`, make one clear numbered list and no chart/card grid. For `dataeco-chart`, reserve a large chart zone and a separate 2–4 bullet insight zone. For `dataeco-table`, reserve a full-width readable table zone. For `dataeco-why-how-what`, output exactly one title plus a three-item bullets element ordered WHY, HOW, WHAT; the renderer owns the fixed concentric-circle composition and must not receive extra decorative shapes.
+- For `dataeco-chart`, use a left narrative area only when the Semantic outline actually contains narrative text or bullets; do not reserve an empty card just to force a two-column silhouette. Scenario/source captions belong directly under the chart without a card background and must remain above `y=500` at a readable 12px or larger.
+- For every table slide, use the hierarchy table → unframed `示例／範例數據` note → one full-width summary band. The summary band must be around 52px tall, use at least 15px text, and vertically centre its copy; never leave a tiny sentence pinned to its bottom edge. This applies to DataEco, native template modes, and freeform layouts.
+- For `dataeco-process`, `dataeco-timeline`, and `dataeco-kpi`, vertically centre short text inside tall cards. If the copy cannot fill a card convincingly, reduce the card height or add a meaningful supporting item; never top-anchor a few lines inside a large empty card. Footer notes must be at least 12px and vertically centred in their footer band.
 - `cover_arc`: use `brandChrome: "coverArc"`, a linear gradient background using the given theme colors, left-aligned white title/subtitle/text, and no cards.
 - `closing_arc`: use `brandChrome: "closingArc"`, a linear gradient background, concise white content, and either three action cards or one clear action statement. Never use a generic thank-you-only page.
 - All ordinary white content pages use `brandChrome: "contentRail"`; reserve the left 82 px for the fixed rail and place all meaningful content at `left >= 105`.

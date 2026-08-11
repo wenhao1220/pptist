@@ -233,14 +233,13 @@ function getMandatoryRequirementQuestions(prompt, isRequirementFollowup) {
   const hasPageCount = /(?:\d+\s*(?:頁|page)|[一二三四五六七八九十]+\s*頁|短版|長版|深入版)/i.test(text);
   // Do not treat a topic such as “科技趨勢” as a visual style. Generic
   // technology only counts when it is explicitly framed as a visual direction.
-  const hasStyle = /(?:國泰|DataEco|國泰金控|科技藍圖|紫灰敘事|金棕高階|簡約鼠尾草|自由生成|自由設計|不要模板|不使用模板|簡約|極簡|留白|清爽|金融風格|科技風格|科技感|高階(?:感|風格)?|品牌風格|敘事風格|鼠尾草)/i.test(text);
 
   if (!hasGoal) {
     questions.push({
       id: 'goal',
       question: '這份簡報希望達成什麼目的？',
       type: 'single_select',
-      options: ['協助主管決策（建議）', '向客戶／外部對象提案', '內部進度或策略報告', '教育與知識分享'],
+      options: ['協助主管決策', '向客戶／外部對象提案', '內部進度或策略報告', '教育與知識分享'],
     });
   }
   if (!hasAudience) {
@@ -248,15 +247,12 @@ function getMandatoryRequirementQuestions(prompt, isRequirementFollowup) {
       id: 'audience',
       question: '這份簡報的主要受眾是誰？',
       type: 'single_select',
-      options: ['高階主管與決策者（建議）', '部門同仁', '客戶或合作夥伴', '投資人或外部大眾'],
-    });
-  }
-  if (!hasStyle) {
-    questions.push({
-      id: 'tone',
-      question: '這份簡報希望採用哪一種視覺風格？',
-      type: 'single_select',
-      options: ['簡約', '科技', '金棕高階', '紫灰敘事', '沒想法'],
+      options: [
+        '同事（協作細節、具體做法與分工）',
+        '主管（進度回報、問題解決方案、成效、風險與待決策事項）',
+        '協理／高階主管（策略影響、商業價值、取捨與回報）',
+        '外部演講（故事性、易懂與互動）',
+      ],
     });
   }
   if (!hasPageCount) {
@@ -281,6 +277,24 @@ function lockConfirmedPageCount(brief) {
   brief.strictFields = strictFields;
 }
 
+/** Recover an exact page count from the user's own messages, never from the
+ * assistant's range options. This remains reliable after a clarification turn
+ * whose newest message is only "A" / "B" / "C". */
+function getExplicitUserPageCount(currentPrompt, chatHistory = []) {
+  const userMessages = (Array.isArray(chatHistory) ? chatHistory : [])
+    .filter(message => message?.role === 'user')
+    .map(message => String(message.content || ''));
+  const candidates = [String(currentPrompt || ''), ...userMessages.reverse()];
+  for (const text of candidates) {
+    const match = text.match(/(?:共計?|約|大約|預計|需要|製作|生成|簡報[^。\n]{0,24}?)(\d{1,2})\s*(?:頁|page)/i)
+      || text.match(/(\d{1,2})\s*(?:頁|page)/i);
+    if (!match) continue;
+    const pageCount = Number.parseInt(match[1], 10);
+    if (Number.isFinite(pageCount) && pageCount >= 1 && pageCount <= 30) return pageCount;
+  }
+  return null;
+}
+
 /**
  * A requirement follow-up can be as short as "A" / "B" / "C". Do not
  * rely on the model to reconnect that letter to the page-count question in
@@ -301,6 +315,20 @@ function constrainPageCountFromReply(brief, reply) {
   const resolved = Number.isFinite(requested) ? requested : fallback;
   brief.pageCount = Math.min(range[1], Math.max(range[0], resolved));
   lockConfirmedPageCount(brief);
+}
+
+/** Prefer the existing canvas whenever a concrete change is requested. */
+function shouldForceCurrentSlideEdit(prompt, slideData, options = {}) {
+  if (options.isRequirementFollowup || options.isBlueprintFeedback) return false;
+  if (!slideData || !Array.isArray(slideData.elements)) return false;
+
+  const text = String(prompt || '').replace(/\s+/g, '');
+  const newDeck = /(?:製作|建立|生成|產生|做)一(?:份|個|套)?.{0,16}(?:簡報|投影片)|(?:從頭|全新).{0,12}(?:簡報|投影片)/i.test(text);
+  const addSlides = /(?:新增|加入|多加|插入).{0,12}(?:一頁|投影片|目錄|封面|封底)/i.test(text);
+  const deckWide = /(?:每一頁|每頁|整份|全部投影片|全簡報|所有頁)/i.test(text);
+  const editAction = /(?:修正|調整|改成|改為|替換|刪除|移動|放大|縮小|對齊|變更|換成|加上|加一個)/i.test(text);
+  const editTarget = /(?:標題|內文|文字|字體|顏色|色條|圖表|表格|圖片|元件|版面|位置|大小|背景)/i.test(text);
+  return editAction && editTarget && !newDeck && !addSlides && !deckWide;
 }
 
 function detectNativeTemplateProfile(prompt) {
@@ -389,6 +417,13 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
     const filteredHistory = (chatHistory || []).filter(msg => msg && msg.content && msg.content.trim().length > 0);
 
     // --- 整合 Intent Classification 與 Edit 的 Edit_Skill ---
+    // A current slide plus an actionable single-slide instruction is stronger
+    // evidence than a probabilistic intent classification. This prevents an
+    // ordinary edit from accidentally starting a brand-new generation flow.
+    if (!forceIntent && shouldForceCurrentSlideEdit(prompt, slideData, { isRequirementFollowup, isBlueprintFeedback })) {
+      forceIntent = 'edit';
+      console.log('[Server] 偵測到目前投影片的具體修改指令，固定使用 edit 意圖');
+    }
     let intent = forceIntent;
     let resultJSON = null;
 
@@ -505,6 +540,10 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
       if (isNavigatorFollowup) {
         constrainPageCountFromReply(brief, requirementPrompt);
       }
+      // A literal request such as "8 頁" always wins over the navigator's
+      // estimate, including after the user later answers requirement choices.
+      const explicitUserPageCount = getExplicitUserPageCount(requirementPrompt, filteredHistory);
+      if (explicitUserPageCount) brief.pageCount = explicitUserPageCount;
       lockConfirmedPageCount(brief);
       const templateSelectionText = isNavigatorFollowup
         ? `${requirementPrompt}\n${filteredHistory.map(message => message.content).join('\n')}`
@@ -543,6 +582,7 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
       if (brief.audience)    briefLines.push(`- 受眾：${brief.audience}`);
       if (brief.occasion)    briefLines.push(`- 場合：${brief.occasion}`);
       if (brief.tone)        briefLines.push(`- 風格基調：${brief.tone}`);
+      if (brief.presentationStyle) briefLines.push(`- 表達策略：${brief.presentationStyle}`);
       if (brief.pageCount)   briefLines.push(`- 頁數：${brief.pageCount} 頁`);
       if (brief.mustInclude && Array.isArray(brief.mustInclude) && brief.mustInclude.length > 0) {
         briefLines.push(`- 必須包含：${brief.mustInclude.join('、')}`);
@@ -581,6 +621,18 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
           contentStrategistPrompt
         );
         semanticBlueprint = parseAIJSON(stage1Reply);
+        const requiredPageCount = Number.parseInt(String(brief.pageCount || ''), 10);
+        if (Number.isFinite(requiredPageCount) && requiredPageCount > 0 && semanticBlueprint?.slides?.length !== requiredPageCount) {
+          console.warn(`[Server] [Agent 1] 頁數不符：要求 ${requiredPageCount} 頁，收到 ${semanticBlueprint?.slides?.length || 0} 頁，正在自動重新規劃…`);
+          const repairReply = await callBedrock(
+            [{ role: 'user', content: `${stage1UserMessage}\n\n【強制修正】你剛剛輸出的投影片數量不正確。請完整重新輸出 Semantic JSON，slides 必須剛好有 ${requiredPageCount} 頁；不可少頁、不可以摘要取代頁面、不可輸出說明文字。` }],
+            contentStrategistPrompt
+          );
+          semanticBlueprint = parseAIJSON(repairReply);
+        }
+        if (Number.isFinite(requiredPageCount) && requiredPageCount > 0 && semanticBlueprint?.slides?.length !== requiredPageCount) {
+          throw new Error(`企劃大綱頁數不符：要求 ${requiredPageCount} 頁，實際 ${semanticBlueprint?.slides?.length || 0} 頁`);
+        }
         console.log(`[Server] [Agent 1] 企劃完成，共規劃了 ${semanticBlueprint?.slides?.length || 0} 頁`);
       } catch (e) {
         console.error('[Server] [Agent 1] 企劃解析失敗:', e);
@@ -619,6 +671,10 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
 
           const batchResult = parseAIJSON(stage2Reply);
 
+          if (!Array.isArray(batchResult?.slides) || batchResult.slides.length !== batchSlides.length) {
+            throw new Error(`第 ${batchIndex} 批排版頁數不符：要求 ${batchSlides.length} 頁，實際 ${batchResult?.slides?.length || 0} 頁`);
+          }
+
           if (i === 0) {
             layoutBlueprint = { ...batchResult, slides: [] };
           }
@@ -629,6 +685,9 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
         }
 
         layoutBlueprint.slides = allLayoutSlides;
+        if (allLayoutSlides.length !== allSlides.length) {
+          throw new Error(`排版結果頁數不符：要求 ${allSlides.length} 頁，實際 ${allLayoutSlides.length} 頁`);
+        }
         console.log(`[Server] [Agent 2] 排版計算完成！共 ${allLayoutSlides.length} 頁`);
 
         // 為了相容前端現有邏輯，把 final result 當作 blueprint 回傳給前端預覽

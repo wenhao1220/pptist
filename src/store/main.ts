@@ -41,6 +41,7 @@ export interface MainState {
   showImageLibPanel: boolean
   showAIPPTDialog: boolean | 'running'
   showAICopilotPanel: boolean
+  aiElementEditRequest: { elementId: string; instruction: string } | null
 }
 
 const nanoid = customAlphabet('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz')
@@ -81,6 +82,7 @@ export const useMainStore = defineStore('main', {
     showImageLibPanel: false, // 開啟圖片庫面板
     showAIPPTDialog: false, // 打开AIPPT创建窗口
     showAICopilotPanel: false, // 打开AI Copilot聊天室面板
+    aiElementEditRequest: null,
   }),
 
   getters: {
@@ -229,6 +231,10 @@ export const useMainStore = defineStore('main', {
 
     setAICopilotPanelState(show: boolean) {
       this.showAICopilotPanel = show
+    },
+
+    setAIElementEditRequest(request: { elementId: string; instruction: string } | null) {
+      this.aiElementEditRequest = request
     },
   },
 })

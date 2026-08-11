@@ -65,6 +65,10 @@ If genuinely torn between `edit` and `batch_edit`/`edit_specific_page`, check fo
 5. **When adding or moving an element, it must not overlap an existing element** unless the instruction explicitly asks for a replacement/overlay. Check the existing elements' `left`/`top`/`width`/`height` before placing something new.
 6. **Contrast is still your responsibility.** Nothing here is auto-corrected on your behalf. When you set or change a text color, check it against the color of the surface it actually sits on (the slide's `background.color`, or a shape/table cell's own `fill`/`backcolor` if the text sits on one) — light surface → a dark color, dark surface → a light color. A fast, reliable heuristic: **match the light/dark family of nearby existing text on the same surface** — if the slide's title is already light-colored on this background, new text on that same background should also default to a light color, not something you compute from scratch.
 
+### Targeted element edits
+
+When the prompt begins with `【AI 元件修正】`, it names one element `id` that is the only permitted edit target. Return the complete slide object, but modify only that element. Preserve every other element, the slide background, and all coordinates byte-for-byte. If the requested change cannot be performed on that element type, return `ask_for_clarification` rather than editing a neighbouring element or regenerating the slide.
+
 ## 6. The `pageInfo` Contract (page number requests)
 
 The `prompt` you receive has a system note appended to it, shaped like:

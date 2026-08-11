@@ -93,7 +93,7 @@
           :padding="8"
           placeholder="例如：把標題改成藍色、字體放大，或貼上主題後點生成..."
           :rows="3"
-          @enter.prevent="sendPrompt()"
+          @enter="handlePromptEnter"
         />
         <div class="footer">
           <button class="attach-btn" @click="clearMessages" title="清空對話" :disabled="loading || messages.length === 0">
@@ -112,7 +112,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, useTemplateRef, nextTick } from 'vue'
+import { ref, useTemplateRef, nextTick, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import axios from 'axios'
 import { aiApiUrl } from '@/utils/aiApi'
@@ -129,6 +129,7 @@ const mainStore = useMainStore()
 const slidesStore = useSlidesStore()
 const snapshotStore = useSnapshotStore()
 const { currentSlide, slides } = storeToRefs(slidesStore)
+const { aiElementEditRequest } = storeToRefs(mainStore)
 const { importPPTXFile } = useImport()
 
 const prompt = ref('')
@@ -155,6 +156,7 @@ interface Message {
   content: string
 }
 const messages = ref<Message[]>([])
+const elementEditTargetId = ref('')
 
 const scrollToBottom = () => {
   if (chatRef.value) {
@@ -301,6 +303,13 @@ const cancelGenerate = () => {
   nextTick(scrollToBottom)
 }
 
+// Enter sends the request; Shift+Enter retains the textarea's native newline.
+const handlePromptEnter = (event: KeyboardEvent) => {
+  if (event.shiftKey) return
+  event.preventDefault()
+  sendPrompt()
+}
+
 const sendPrompt = async () => {
   if ((!prompt.value.trim() && !attachedFile.value) || loading.value) return
 
@@ -348,7 +357,12 @@ const sendPrompt = async () => {
     let response: any
 
     const isAwaitingReply = isBlueprintFeedback || awaitingRequirementReply.value
+    const isTargetedElementEdit = !!elementEditTargetId.value
     let finalPrompt = fileToSend ? (userText || '請根據這份文件的內容，幫我生成一份完整的簡報') : userText
+
+    if (isTargetedElementEdit) {
+      finalPrompt = `【AI 元件修正】只可修改目前投影片中 id 為「${elementEditTargetId.value}」的元件。其他所有元件、投影片背景與版面都必須完全保留。\n使用者要求：${userText}`
+    }
 
     // 藍圖修改意見：在 prompt 前補充「修改藍圖」的系統提示，讓後端清楚脈絡
     if (isBlueprintFeedback) {
@@ -376,7 +390,9 @@ const sendPrompt = async () => {
       formData.append('requirementPrompt', userText)
       formData.append('slideData', JSON.stringify(currentSlide.value))
       formData.append('chatHistory', JSON.stringify(messages.value))
-      if (isAwaitingReply) {
+      if (isTargetedElementEdit) {
+        formData.append('forceIntent', 'edit')
+      } else if (isAwaitingReply) {
         formData.append('forceIntent', 'generate')
       }
       if (isRequirementFollowup) {
@@ -397,7 +413,9 @@ const sendPrompt = async () => {
         slideData: currentSlide.value,
         chatHistory: messages.value,
       }
-      if (isAwaitingReply) {
+      if (isTargetedElementEdit) {
+        payload.forceIntent = 'edit'
+      } else if (isAwaitingReply) {
         payload.forceIntent = 'generate'
       }
       if (isRequirementFollowup) {
@@ -430,7 +448,9 @@ const sendPrompt = async () => {
       } else if (intent === 'edit') {
         const updatedSlide = response.data.slide
         snapshotStore.addSnapshot()
-        slidesStore.updateSlide(updatedSlide)
+        // The user may navigate away while AI is working. Update the slide
+        // returned by the server, never whichever slide is currently visible.
+        slidesStore.updateSlide(updatedSlide, updatedSlide.id)
         messages.value.push({ role: 'assistant', content: '✅ 已為您修改本頁投影片！' })
 
       } else if (intent === 'edit_specific_page') {
@@ -535,10 +555,19 @@ const sendPrompt = async () => {
     console.error('AI 編輯失敗', err)
     messages.value.push({ role: 'assistant', content: '❌ 編輯失敗：' + (err.response?.data?.error || err.message) })
   } finally {
+    elementEditTargetId.value = ''
     loading.value = false
     nextTick(scrollToBottom)
   }
 }
+
+watch(aiElementEditRequest, request => {
+  if (!request || loading.value) return
+  elementEditTargetId.value = request.elementId
+  prompt.value = request.instruction
+  mainStore.setAIElementEditRequest(null)
+  nextTick(() => sendPrompt())
+}, { immediate: true })
 
 const close = () => {
   mainStore.setAICopilotPanelState(false)
