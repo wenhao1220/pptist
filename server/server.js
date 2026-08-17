@@ -1,6 +1,8 @@
 import express from 'express';
 import multer from 'multer';
 import cors from 'cors';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
@@ -18,11 +20,67 @@ dotenv.config({ path: join(__dirname, '../.env') });
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+const isProduction = process.env.NODE_ENV === 'production';
+const parseBoundedInteger = (value, fallback, max) => {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, max) : fallback;
+};
+const configuredOrigins = String(process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+const allowedOrigins = new Set(configuredOrigins.length
+  ? configuredOrigins
+  : (isProduction ? [] : ['http://127.0.0.1:5173', 'http://localhost:5173']));
+const maxUploadBytes = parseBoundedInteger(process.env.UPLOAD_MAX_BYTES, 10 * 1024 * 1024, 25 * 1024 * 1024);
+const apiRequestLimit = parseBoundedInteger(process.env.API_RATE_LIMIT_MAX, 60, 300);
+const allowedUploadExtensions = new Set(['.pdf', '.docx', '.txt', '.md']);
 
-// 設定 multer 記憶體儲存，以便直接傳遞 buffer 給各個解析器
-const upload = multer({ storage: multer.memoryStorage() });
+// Behind an ALB/reverse proxy, opt in explicitly so rate limiting uses the
+// original client IP. Do not trust forwarded headers on a directly exposed VM.
+if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+
+app.disable('x-powered-by');
+app.use(helmet({
+  // The Vue app contains inline styles and may render user-selected remote
+  // images. Keep CSP rollout separate rather than shipping a broken editor.
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
+app.use(cors({
+  origin(origin, callback) {
+    // Same-origin server rendering and non-browser health checks have no
+    // Origin header. Cross-origin browser requests must be explicitly listed.
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    return callback(new Error('This origin is not allowed by the CORS policy.'));
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+  maxAge: 86400,
+}));
+app.use(express.json({ limit: '5mb' }));
+app.use('/api', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: apiRequestLimit,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { success: false, error: '請求過於頻繁，請稍後再試。' },
+}));
+
+// Only document formats that the application can parse are accepted. File
+// size is capped before buffering so a public endpoint cannot exhaust memory.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: maxUploadBytes, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    const fileName = String(file.originalname || '').toLowerCase();
+    const extension = fileName.slice(fileName.lastIndexOf('.'));
+    if (!allowedUploadExtensions.has(extension)) {
+      return callback(new Error('只支援 PDF、DOCX、TXT 或 MD 檔案。'));
+    }
+    return callback(null, true);
+  },
+});
 
 app.post('/api/feedback', async (req, res) => {
   const message = String(req.body?.message || '').trim();
@@ -1191,6 +1249,23 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
       error: error?.response?.data?.message || error.message || 'API 請求失敗',
     });
   }
+});
+
+app.use((error, _req, res, next) => {
+  if (!error) return next();
+  if (error instanceof multer.MulterError) {
+    const message = error.code === 'LIMIT_FILE_SIZE'
+      ? `附件超過 ${Math.floor(maxUploadBytes / 1024 / 1024)}MB 限制。`
+      : '附件上傳格式不正確。';
+    return res.status(413).json({ success: false, error: message });
+  }
+  if (error.message === 'This origin is not allowed by the CORS policy.') {
+    return res.status(403).json({ success: false, error: '此網域未獲准使用服務。' });
+  }
+  if (error.message === '只支援 PDF、DOCX、TXT 或 MD 檔案。') {
+    return res.status(415).json({ success: false, error: error.message });
+  }
+  return next(error);
 });
 
 app.get('/health', (_req, res) => {
