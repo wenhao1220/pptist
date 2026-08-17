@@ -21,6 +21,9 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 const isProduction = process.env.NODE_ENV === 'production';
+// Keep the short-term production PoC private by default. It is accessed through
+// an SSH/SSM tunnel; an internal reverse proxy can set HOST explicitly later.
+const listenHost = process.env.HOST || (isProduction ? '127.0.0.1' : undefined);
 const parseBoundedInteger = (value, fallback, max) => {
   const parsed = Number.parseInt(String(value || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, max) : fallback;
@@ -1281,6 +1284,7 @@ if (process.env.NODE_ENV === 'production') {
   app.get('*', (_req, res) => res.sendFile(join(clientDist, 'index.html')));
 }
 
-app.listen(port, () => {
-  console.log(`[Server] API 伺服器正在執行，監聽埠號 ${port}`);
+app.listen(port, listenHost, () => {
+  const endpoint = listenHost ? `${listenHost}:${port}` : `埠號 ${port}`;
+  console.log(`[Server] API 伺服器正在執行，監聽 ${endpoint}`);
 });
