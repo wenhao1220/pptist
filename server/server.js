@@ -89,6 +89,47 @@ function getNearestColorName(hex) {
   return nearestName;
 }
 
+// The WHY/HOW/WHAT DataEco page is a specialised explanatory framework, not a
+// decorative three-column layout.  Reject accidental assignments such as
+// "three mechanisms" or "three findings" before the layout agent sees them.
+function slideIsExplicitWhyHowWhat(slide, requestText = '') {
+  const fields = [
+    slide?.title, slide?.subtitle, slide?.text,
+    ...(Array.isArray(slide?.bullets) ? slide.bullets : []),
+    requestText,
+  ].filter(Boolean).join(' ');
+  const englishFramework = /\bwhy\b/i.test(fields) && /\bhow\b/i.test(fields) && /\bwhat\b/i.test(fields);
+  const chineseFramework = /(?:為何|為什麼)/.test(fields)
+    && /(?:如何|怎麼)/.test(fields)
+    && /(?:做什麼|是什麼|什麼)/.test(fields);
+  return englishFramework || chineseFramework;
+}
+
+function enforceDataEcoFrameworkTemplates(blueprint, requestText = '') {
+  if (!Array.isArray(blueprint?.slides)) return;
+  blueprint.slides.forEach((slide) => {
+    if (slide?.templateId === 'dataeco-why-how-what' && !slideIsExplicitWhyHowWhat(slide, requestText)) {
+      slide.templateId = 'dataeco-content';
+      slide.templateRole = 'content_rail';
+    }
+  });
+}
+
+// The model occasionally returns one or two extra outline pages despite a
+// strict count.  This must not make the whole request fail.  Preserve the
+// opening sequence and the final conclusion/closing page, and trim only the
+// surplus middle pages.  We never manufacture new facts to fill a deck.
+function trimBlueprintToPageCount(blueprint, targetCount) {
+  if (!Array.isArray(blueprint?.slides) || !Number.isInteger(targetCount) || targetCount < 1) return false;
+  if (blueprint.slides.length <= targetCount) return false;
+
+  const slides = blueprint.slides;
+  blueprint.slides = targetCount === 1
+    ? [slides[0]]
+    : [...slides.slice(0, targetCount - 1), slides[slides.length - 1]];
+  return true;
+}
+
 // =========================================================
 // LLM (Bedrock) 呼叫函式
 // =========================================================
@@ -191,6 +232,190 @@ async function extractTextFromFile(file) {
   return file.buffer.toString('utf-8');
 }
 
+/**
+ * A deck must never silently switch to a generic subject just because an
+ * uploaded source was unreadable or too large for the model context. Keep a
+ * generous, explicit limit and fail closed instead of producing a deck from a
+ * partial document.
+ */
+const MAX_SOURCE_TEXT_CHARS = 100000;
+
+function buildUploadedSourceContext(fileName, text) {
+  const sourceTitle = extractUploadedSourceTitle(text);
+  return [
+    `【使用者上傳文件：${fileName}】`,
+    sourceTitle ? `【文件主標題：${sourceTitle}】` : '',
+    '這是本次簡報的第一優先事實來源。簡報主題、章節、人物、時間、數字與結論都必須以此文件及使用者 Prompt 為準。',
+    '不得以一般常識改寫成其他主題；文件未提及的事實、數字、案例或結論不得自行補造。若文件與 Prompt 有衝突，以使用者最新 Prompt 為準，並保留文件可支持的內容。',
+    '【文件全文開始】',
+    text,
+    '【文件全文結束】',
+  ].join('\n');
+}
+
+function extractUploadedSourceTitle(text) {
+  const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const markdownTitle = lines.find(line => /^#\s+\S/.test(line));
+  if (markdownTitle) return markdownTitle.replace(/^#+\s*/, '').trim().slice(0, 300);
+  const labelledTitle = lines.find(line => /^(?:title|題目|標題)\s*[:：]/i.test(line));
+  if (labelledTitle) return labelledTitle.replace(/^(?:title|題目|標題)\s*[:：]\s*/i, '').trim().slice(0, 300);
+  return '';
+}
+
+/**
+ * Lightweight, keyless research fallback. The returned dossier is evidence
+ * for the content agent, not a license to make up missing figures. The agent
+ * must only make factual claims that are supported by these sources or the
+ * user-provided material.
+ */
+async function collectVerifiedResearch(topic) {
+  const query = String(topic || '').trim();
+  if (!query || process.env.WEB_RESEARCH_ENABLED === 'false') {
+    return { status: 'disabled', sources: [] };
+  }
+
+  const timeout = 8000;
+  const sources = [];
+  const addSource = (title, url, excerpt) => {
+    const cleanTitle = String(title || '').trim();
+    const cleanUrl = String(url || '').trim();
+    const cleanExcerpt = String(excerpt || '').replace(/\s+/g, ' ').trim();
+    if (!cleanTitle || !cleanUrl || !cleanExcerpt) return;
+    if (sources.some(source => source.url === cleanUrl)) return;
+    sources.push({ title: cleanTitle, url: cleanUrl, excerpt: cleanExcerpt.slice(0, 1200) });
+  };
+
+  const [duckResult, wikiResult, duckHtmlResult] = await Promise.allSettled([
+    axios.get('https://api.duckduckgo.com/', {
+      params: { q: query, format: 'json', no_html: 1, skip_disambig: 1 },
+      timeout,
+    }),
+    axios.get('https://zh.wikipedia.org/w/api.php', {
+      params: { action: 'query', list: 'search', srsearch: query, srlimit: 3, format: 'json', utf8: 1 },
+      timeout,
+    }),
+    // The Instant Answer API often has no result for a current business or
+    // technology topic.  Use DuckDuckGo's normal result page as a keyless
+    // fallback so chart requests can still reach primary report sources.
+    axios.get('https://html.duckduckgo.com/html/', {
+      params: { q: `${query} statistics report` },
+      timeout,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    }),
+  ]);
+
+  if (duckResult.status === 'fulfilled') {
+    const data = duckResult.value?.data || {};
+    addSource(data.Heading || query, data.AbstractURL, data.AbstractText);
+    for (const item of Array.isArray(data.RelatedTopics) ? data.RelatedTopics : []) {
+      if (sources.length >= 3) break;
+      addSource(item.Text?.slice(0, 100) || query, item.FirstURL, item.Text);
+    }
+  }
+  if (wikiResult.status === 'fulfilled') {
+    const results = wikiResult.value?.data?.query?.search || [];
+    for (const item of results) {
+      if (sources.length >= 4) break;
+      const title = String(item.title || '').trim();
+      addSource(title, `https://zh.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`, item.snippet?.replace(/<[^>]+>/g, ''));
+    }
+  }
+
+  if (duckHtmlResult.status === 'fulfilled') {
+    const html = String(duckHtmlResult.value?.data || '');
+    const resultRegex = /result__a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?result__snippet[^>]*>([\s\S]*?)<\//gi;
+    let match;
+    while (sources.length < 6 && (match = resultRegex.exec(html))) {
+      let url = String(match[1] || '').replace(/&amp;/g, '&');
+      const uddg = url.match(/[?&]uddg=([^&]+)/);
+      if (uddg) {
+        try { url = decodeURIComponent(uddg[1]); } catch { /* keep original URL */ }
+      }
+      const strip = (value) => String(value || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+      addSource(strip(match[2]), url, strip(match[3]));
+    }
+  }
+
+  // Search snippets identify a source but rarely contain enough numbers for a
+  // chart. Read a small set of source documents and retain only numerical
+  // sentences, so the strategist can build a chart from evidence rather than
+  // falling back to an empty placeholder.
+  await Promise.all(sources.slice(0, 3).map(async (source) => {
+    try {
+      const response = await axios.get(source.url, {
+        timeout: 12000,
+        responseType: 'arraybuffer',
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      });
+      const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+      let text = '';
+      if (contentType.includes('pdf') || /\.pdf(?:$|[?#])/i.test(source.url)) {
+        const parsed = await pdfParse(Buffer.from(response.data));
+        text = parsed.text || '';
+      } else {
+        text = Buffer.from(response.data).toString('utf8')
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;|&#160;/gi, ' ')
+          .replace(/&amp;/gi, '&')
+          .replace(/\s+/g, ' ');
+      }
+      const numericLines = text.split(/(?<=[.!?。！？])\s+|[\r\n]+/)
+        .map(line => line.replace(/\s+/g, ' ').trim())
+        .filter(line => line.length >= 25 && line.length <= 420 && /\d/.test(line) && /(?:%|percent|million|billion|trillion|202[0-9]|倍|萬|億|兆)/i.test(line))
+        .slice(0, 8);
+      if (numericLines.length) source.excerpt = numericLines.join('\n');
+    } catch (error) {
+      // A source may block automated requests. Keep its search snippet; it is
+      // still useful context, but it will not be treated as numeric evidence.
+      console.warn('[Server] Research source read skipped:', source.url, error.message);
+    }
+  }));
+
+  return { status: sources.length ? 'available' : 'unavailable', sources };
+}
+
+function formatResearchDossier(research) {
+  if (!research?.sources?.length) {
+    return '【外部查證結果】\n本次未取得可引用的公開來源。不得自行補造資料、數字、案例或時間點；若使用者資料不足，改以明確標示「待補資料」的文字說明，或要求使用者提供來源。';
+  }
+  const lines = ['【外部查證結果（只可使用下列來源支持事實）】'];
+  research.sources.forEach((source, index) => {
+    lines.push(`${index + 1}. ${source.title}\n   來源：${source.url}\n   摘要：${source.excerpt}`);
+  });
+  lines.push('只可採用上述來源或使用者提供資料可直接支持的事實；不可將摘要延伸為未被支持的數字、預測或結論。若使用者要求圖表，且上述摘要含可直接引用的數字，必須以那些數字建立 dataClass: "real" 的圖表並在頁面附來源；不可因圖表需求而改為空白 placeholder。');
+  return lines.join('\n');
+}
+
+function getEvidencePolicyViolation(blueprint) {
+  const slides = Array.isArray(blueprint?.slides) ? blueprint.slides : [];
+  for (const [index, slide] of slides.entries()) {
+    for (const visualType of ['chart', 'table']) {
+      const visual = slide?.[visualType];
+      if (!visual) continue;
+      if (!['real', 'pending'].includes(visual.dataClass)) {
+        return `第 ${index + 1} 頁的 ${visualType} 沒有標示為 dataClass: real 或 pending，可能含未查證或虛構資料`;
+      }
+      if (visual.dataClass === 'pending' && Array.isArray(visual.values) && visual.values.length > 0) {
+        return `第 ${index + 1} 頁的 ${visualType} 標示為 pending 卻含有數值，可能把未查證資料畫成圖表`;
+      }
+      if (visual.dataClass === 'pending' && Array.isArray(visual.rows) && visual.rows.length > 0) {
+        return `第 ${index + 1} 頁的 table 標示為 pending 卻含有資料列，可能把未查證資料畫成表格`;
+      }
+    }
+  }
+  return null;
+}
+
+function applyUploadedSourceTitle(blueprint, sourceTitle) {
+  if (!sourceTitle || !blueprint || typeof blueprint !== 'object') return;
+  blueprint.title = sourceTitle;
+  const slides = Array.isArray(blueprint.slides) ? blueprint.slides : [];
+  const cover = slides.find(slide => slide?.type === 'cover') || slides[0];
+  if (cover && typeof cover === 'object') cover.title = sourceTitle;
+}
+
 // =========================================================
 // LLM 藍圖生成的 System Prompt
 // 輔助函式：將 Navigator 的結構化問題轉為純文字（前端零改動）
@@ -220,21 +445,29 @@ function formatQuestionsAsText(questions) {
 }
 
 /** Enforce the human-in-the-loop fields for every new deck request. */
-function getMandatoryRequirementQuestions(prompt, isRequirementFollowup) {
+function getMandatoryRequirementQuestions(prompt, isRequirementFollowup, sourceText = '') {
   if (isRequirementFollowup) return [];
 
   const text = String(prompt || '').replace(/\s+/g, '');
+  // Only regard explicit presentation-brief fields in an attachment as
+  // answers. A research paper mentioning "eight pages" in prose must not
+  // accidentally become the requested deck length.
+  const sourceBrief = String(sourceText || '').slice(0, 8000);
   const delegated = /(?:直接做|直接生成|直接製作|你決定|自行決定|自由發揮|隨意|都可以|whatever|surpriseme)/i.test(text);
-  if (delegated) return [];
 
   const questions = [];
-  const hasGoal = /(?:目的|目標|用途|用於|目的是|要讓|希望(?:讓|協助)|提案|說服|教學|教育|報告|決策|募資|發布|分享)/.test(text);
-  const hasAudience = /(?:受眾|聽眾|觀眾|讀者|對象|面向|給(?:誰|董事會|高階主管|主管|管理層|客戶|投資人|員工|同仁|學生)|董事會|高階主管|管理層|客戶|投資人|員工|同仁|學生)/.test(text);
-  const hasPageCount = /(?:\d+\s*(?:頁|page)|[一二三四五六七八九十]+\s*頁|短版|長版|深入版)/i.test(text);
+  const hasGoal = /(?:目的|目標|用途|用於|目的是|要讓|希望(?:讓|協助)|提案|說服|教學|教育|報告|決策|募資|發布|分享)/.test(text)
+    || /(?:簡報)?(?:目的|目標|用途)\s*[:：]/.test(sourceBrief);
+  const hasAudience = /(?:受眾|聽眾|觀眾|讀者|對象|面向|給(?:誰|董事會|高階主管|主管|管理層|客戶|投資人|員工|同仁|學生)|董事會|高階主管|管理層|客戶|投資人|員工|同仁|學生)/.test(text)
+    || /(?:簡報)?(?:受眾|聽眾|對象)\s*[:：]/.test(sourceBrief);
+  const hasPageCount = /(?:\d+\s*(?:頁|page)|[一二三四五六七八九十]+\s*頁|短版|長版|深入版)/i.test(text)
+    || /(?:(?:頁數|投影片數|簡報頁數|slides?)\s*[:：]\s*\d+|(?:製作|生成|簡報).{0,12}\d+\s*(?:頁|page))/i.test(sourceBrief);
+  const hasTone = /(?:國泰|dataeco|模板|簡約(?:風格|版)?|科技(?:風格|感)|金棕|紫灰|自由(?:生成|設計)|不要模板|金融風格|商務風格)/i.test(text)
+    || /(?:簡報)?(?:風格|版型|模板)\s*[:：]/i.test(sourceBrief);
   // Do not treat a topic such as “科技趨勢” as a visual style. Generic
   // technology only counts when it is explicitly framed as a visual direction.
 
-  if (!hasGoal) {
+  if (!hasGoal && !delegated) {
     questions.push({
       id: 'goal',
       question: '這份簡報希望達成什麼目的？',
@@ -242,7 +475,7 @@ function getMandatoryRequirementQuestions(prompt, isRequirementFollowup) {
       options: ['協助主管決策', '向客戶／外部對象提案', '內部進度或策略報告', '教育與知識分享'],
     });
   }
-  if (!hasAudience) {
+  if (!hasAudience && !delegated) {
     questions.push({
       id: 'audience',
       question: '這份簡報的主要受眾是誰？',
@@ -258,9 +491,17 @@ function getMandatoryRequirementQuestions(prompt, isRequirementFollowup) {
   if (!hasPageCount) {
     questions.push({
       id: 'pageCount',
-      question: '這份簡報預計需要幾頁？',
+      question: '這份簡報需要幾頁？請選擇範圍或明確頁數。',
       type: 'single_select',
-      options: ['1～5 頁（精簡）', '6～10 頁（標準）', '11 頁以上（深入）', '沒想法，請 AI 決定'],
+      options: ['1～5 頁', '6～10 頁', '11 頁以上', '沒想法，請 AI 決定'],
+    });
+  }
+  if (!hasTone && !delegated) {
+    questions.push({
+      id: 'tone',
+      question: '這份簡報希望採用哪一種視覺風格？',
+      type: 'single_select',
+      options: ['簡約', '科技', '金棕高階', '紫灰敘事', '沒想法'],
     });
   }
   return questions;
@@ -379,8 +620,14 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
     let prompt = req.body.prompt;
     let requirementPrompt = req.body.requirementPrompt;
     let slideData = req.body.slideData;
+    let deckContext = req.body.deckContext;
     let chatHistory = req.body.chatHistory;
     let forceIntent = req.body.forceIntent;
+    const isInsertionMode = req.body.insertionMode === true || req.body.insertionMode === 'true';
+    const requestedInsertCountRaw = Number.parseInt(String(req.body.requestedInsertCount || '1'), 10);
+    const requestedInsertCount = Number.isFinite(requestedInsertCountRaw)
+      ? Math.min(10, Math.max(1, requestedInsertCountRaw))
+      : 1;
     const isRequirementFollowup = req.body.requirementFollowup === true || req.body.requirementFollowup === 'true';
     const isBlueprintFeedback = req.body.blueprintFeedback === true || req.body.blueprintFeedback === 'true';
 
@@ -390,27 +637,57 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
     if (typeof chatHistory === 'string') {
       try { chatHistory = JSON.parse(chatHistory); } catch (_) { chatHistory = []; }
     }
+    // Client sends a plain-text digest of current slides. It is intentionally
+    // capped: follow-up insertions need the report's facts and terminology,
+    // not a second copy of the entire presentation payload.
+    deckContext = typeof deckContext === 'string' ? deckContext.trim().slice(0, 30000) : '';
 
     if (!prompt) {
       return res.status(400).json({ success: false, error: '未提供指令' });
     }
-    requirementPrompt = String(requirementPrompt || prompt);
+    const rawRequirementPrompt = typeof requirementPrompt === 'string' ? requirementPrompt : '';
+    requirementPrompt = String(rawRequirementPrompt || prompt);
+    // Keep the user's own request separate from extracted source text. A
+    // document mentioning "8 頁" is evidence, not an instruction to skip the
+    // mandatory page-count question.
+    const userRequirementPrompt = rawRequirementPrompt;
 
-    // 若有附件，提取文字並附加到 prompt
+    // 若有附件，提取文字並讓它同時進入需求確認、內容規劃與後續
+    // 排版流程；先前只附加到 prompt，Navigator 看不到來源而會把
+    // 上傳文件錯判成一般主題。
+    let uploadedSourceContext = '';
+    let uploadedSourceTitle = '';
+    let uploadedSourceCharacterCount = 0;
+    let uploadedSourceText = '';
     if (req.file) {
       console.log(`[Server] 偵測到附件：${req.file.originalname}，開始提取文字...`);
       try {
         const fileText = await extractTextFromFile(req.file);
-        const MAX_CHARS = 40000;
-        const truncated = fileText.length > MAX_CHARS
-          ? fileText.substring(0, MAX_CHARS) + '\n\n[文件內容因長度限制已截斷]'
-          : fileText;
-        prompt = `${prompt}\n\n【附件內容 (${req.file.originalname})】：\n${truncated}`;
+        if (!fileText.trim()) {
+          return res.status(422).json({ success: false, error: '附件未擷取到可用文字，請確認檔案不是掃描影像或受密碼保護後再上傳。' });
+        }
+        if (fileText.length > MAX_SOURCE_TEXT_CHARS) {
+          return res.status(413).json({ success: false, error: `附件文字共 ${fileText.length.toLocaleString()} 字，超過單次可完整處理的 ${MAX_SOURCE_TEXT_CHARS.toLocaleString()} 字上限。請拆分文件後重新上傳；系統不會使用截斷內容生成。` });
+        }
+        uploadedSourceTitle = extractUploadedSourceTitle(fileText);
+        uploadedSourceCharacterCount = fileText.length;
+        uploadedSourceText = fileText;
+        uploadedSourceContext = buildUploadedSourceContext(req.file.originalname, fileText);
+        requirementPrompt = `${requirementPrompt}\n\n${uploadedSourceContext}`;
+        // An attachment in the copilot is a request to create a deck from
+        // that material. Do not let the edit-intent classifier route it to a
+        // generic chat/edit path before the source-aware generation pipeline.
+        if (!forceIntent && !isRequirementFollowup) forceIntent = 'generate';
         console.log(`[Server] 附件文字提取完成：${fileText.length} 字元`);
       } catch (fileErr) {
         console.error('[Server] 附件解析失敗:', fileErr.message);
+        return res.status(422).json({ success: false, error: '附件解析失敗，系統已停止生成以避免忽略文件內容。請改用可選取文字的 PDF、DOCX、TXT 或 MD 檔。' });
       }
     }
+
+    const existingDeckContext = isInsertionMode && deckContext
+      ? `【既有簡報內容（新增頁的事實與用語來源）】\n${deckContext}\n【新增頁規則】只能根據上述既有內容與使用者要求撰寫。請提煉相關事實、術語、結果或脈絡，不得以「第一階段／關鍵里程碑」等通用預設字代替實際內容。\n`
+      : '';
 
     console.log(`[Server] 收到指令：${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}`);
 
@@ -495,7 +772,7 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
       // Requirement Navigator 問卷時才帶入對話，讓它整合原始需求與回答。
       const isNavigatorFollowup = isRequirementFollowup || isBlueprintFeedback;
       const navigatorHistory = isNavigatorFollowup ? filteredHistory : [];
-      const navigatorUserMessage = `【對話歷史】：\n${JSON.stringify(navigatorHistory)}\n\n【最新指令】：${requirementPrompt}\n\n請根據上述輸入，決定輸出 need_clarification 或 ready JSON：`;
+      const navigatorUserMessage = `【對話歷史】：\n${JSON.stringify(navigatorHistory)}\n\n【最新指令】：${requirementPrompt}\n\n${isNavigatorFollowup ? '【本輪回答規則】使用者正在回答上一輪的整組問題。請依題號解讀如「1A 2B 3C 4D」的回答，並直接輸出 ready JSON；不得重複詢問已列出的問題。\n\n' : ''}${uploadedSourceContext ? '【附件規則】上傳文件是本次簡報的第一優先來源；請從文件擷取主題與必含內容，不能改成無關主題。\n\n' : ''}請根據上述輸入，決定輸出 need_clarification 或 ready JSON：`;
 
       let navigatorResult = null;
       try {
@@ -505,13 +782,40 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
         );
         navigatorResult = parseAIJSON(navigatorReply);
       } catch (e) {
-        // Navigator 解析失敗時，預設視為資訊充足，直接往下走，避免流程卡住
-        console.warn('[Server] [Agent 0] Navigator 解析失敗，預設視為 ready：', e.message);
-        navigatorResult = { status: 'ready', brief: { topic: prompt, pageCount: 8, mustInclude: [], dataNeeds: 'AI may fabricate plausible data', language: 'zh-TW' } };
+        // 需求確認解析失敗時必須 fail closed。不能以預設八頁和虛構
+        // 資料繼續生成，否則既會忽略附件也會違反資料正確性規則。
+        console.warn('[Server] [Agent 0] Navigator 解析失敗，要求使用者重新確認：', e.message);
+        navigatorResult = {
+          status: 'need_clarification',
+          questions: [{ question: '需求確認暫時無法解析。請重新提供簡報主題、頁數與資料來源；系統不會自行猜測或虛構內容。', type: 'free_text' }],
+        };
+      }
+
+      // An insertion is a bounded edit to an existing deck. Do not run the
+      // new-deck requirements interview again: it loses the requested page
+      // count and turns "add one page" into a regenerated 9-page deck.
+      if (isInsertionMode) {
+        const currentTitle = slideData?.elements?.find?.(element => element?.type === 'title')?.content || '';
+        const deckTitle = String(deckContext).match(/投影片\s*1[：:]\s*([^；\n]+)/)?.[1] || '';
+        navigatorResult = {
+          status: 'ready',
+          brief: {
+            topic: uploadedSourceTitle || deckTitle || currentTitle || '既有簡報補充內容',
+            goal: '補充既有簡報指定內容',
+            audience: '沿用既有簡報受眾',
+            tone: '沿用既有簡報風格',
+            pageCount: requestedInsertCount,
+            mustInclude: [String(prompt || '')],
+            language: 'zh-TW',
+            strictFields: ['pageCount'],
+          },
+        };
       }
 
       // 即使模型推論了目的或受眾，新需求也必須先經過一次明確確認。
-      const mandatoryQuestions = getMandatoryRequirementQuestions(requirementPrompt, isNavigatorFollowup);
+      const mandatoryQuestions = isInsertionMode
+        ? []
+        : getMandatoryRequirementQuestions(userRequirementPrompt, isNavigatorFollowup, uploadedSourceText);
       if (mandatoryQuestions.length > 0) {
         console.log('[Server] [Agent 0] 缺少目標或受眾，向使用者追問...');
         const questionText = formatQuestionsAsText(mandatoryQuestions);
@@ -519,7 +823,8 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
           success: true,
           intent: 'ask_for_clarification',
           questions: [questionText],
-          flow: 'requirement_navigator'
+          flow: 'requirement_navigator',
+          sourceMeta: uploadedSourceContext ? { fileName: req.file.originalname, title: uploadedSourceTitle, characters: uploadedSourceCharacterCount } : null,
         });
       }
 
@@ -531,28 +836,59 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
           success: true,
           intent: 'ask_for_clarification',
           questions: [questionText],
-          flow: 'requirement_navigator'
+          flow: 'requirement_navigator',
+          sourceMeta: uploadedSourceContext ? { fileName: req.file.originalname, title: uploadedSourceTitle, characters: uploadedSourceCharacterCount } : null,
         });
       }
 
       // 資訊充足：提取 brief
       const brief = navigatorResult.brief || {};
-      if (isNavigatorFollowup) {
+      if (isInsertionMode) {
+        brief.pageCount = requestedInsertCount;
+        lockConfirmedPageCount(brief);
+      } else if (isNavigatorFollowup) {
         constrainPageCountFromReply(brief, requirementPrompt);
       }
       // A literal request such as "8 頁" always wins over the navigator's
       // estimate, including after the user later answers requirement choices.
-      const explicitUserPageCount = getExplicitUserPageCount(requirementPrompt, filteredHistory);
-      if (explicitUserPageCount) brief.pageCount = explicitUserPageCount;
-      lockConfirmedPageCount(brief);
+      if (!isInsertionMode) {
+        const explicitUserPageCount = getExplicitUserPageCount(userRequirementPrompt, filteredHistory);
+        if (explicitUserPageCount) brief.pageCount = explicitUserPageCount;
+        lockConfirmedPageCount(brief);
+      }
+      if (uploadedSourceContext) {
+        brief.sourceMode = 'uploaded_file';
+        brief.sourceOfTruth = req.file.originalname;
+        brief.sourceTitle = uploadedSourceTitle || null;
+        brief.dataPolicy = 'source_or_verified_research_only';
+        // A document's declared title is deterministic metadata, not an LLM
+        // inference. Lock it into the Brief so a generic classifier cannot
+        // replace a research paper with an unrelated industry topic.
+        if (uploadedSourceTitle) brief.topic = uploadedSourceTitle;
+        const strictFields = Array.isArray(brief.strictFields) ? brief.strictFields : [];
+        for (const field of ['topic', 'mustInclude', 'dataNeeds']) {
+          if (!strictFields.includes(field)) strictFields.push(field);
+        }
+        brief.strictFields = strictFields;
+      }
       const templateSelectionText = isNavigatorFollowup
         ? `${requirementPrompt}\n${filteredHistory.map(message => message.content).join('\n')}`
         : requirementPrompt;
+      // "國泰" / "DataEco" is an explicit request for the fixed DataEco
+      // design system. It must take priority over a previously recommended
+      // native template (or a theme guessed by an earlier agent), otherwise
+      // the two palettes can be mixed on the same slide.
+      const explicitDataEcoProfile = /(?:國泰|DataEco|國泰金控)/i.test(templateSelectionText);
       const explicitTemplateProfile = detectNativeTemplateProfile(templateSelectionText);
       // Only the newest answer may request freeform. Earlier assistant
       // questions contain the option “沒想法”, so they must not trigger it.
       const freeformTemplateRequest = isFreeformTemplateRequest(requirementPrompt);
-      if (explicitTemplateProfile) {
+      if (explicitDataEcoProfile) {
+        brief.brandProfile = 'dataeco';
+        brief.templateProfile = null;
+        brief.templateColorOverride = null;
+        brief.templateProfileSource = 'dataeco';
+      } else if (explicitTemplateProfile) {
         brief.templateProfile = explicitTemplateProfile;
         brief.brandProfile = null;
         brief.templateProfileSource = 'explicit';
@@ -596,6 +932,9 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
       if (brief.assumptions && Array.isArray(brief.assumptions) && brief.assumptions.length > 0) {
         briefLines.push(`- 推斷假設：${brief.assumptions.join('；')}`);
       }
+      if (brief.sourceOfTruth) briefLines.push(`- 第一優先資料來源：${brief.sourceOfTruth}（內容不可偏離此來源）`);
+      if (brief.sourceTitle) briefLines.push(`- 文件主標題（固定）：${brief.sourceTitle}。封面與大綱必須明確呈現此研究／文件主題，不可改成相鄰領域。`);
+      briefLines.push('- 資料正確性規則：僅可使用使用者提供資料或可追溯的網路查證來源；禁止虛構任何事實、數字、案例、人物、日期或引用。資料不足時必須明確標示待補資料或要求來源。');
       // ★ 修改 1：加入 strictFields — 這是 Requirement Navigator 最重要的輸出訊號，
       //    用來告知 Content Strategist 哪些欄位是使用者的硬性鎖定值（不可修改），
       //    若不傳遞，AI 可能靜默覆蓋使用者明確指定的品牌色、頁數、必包內容等。
@@ -604,8 +943,29 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
       }
       const briefSummary = briefLines.join('\n');
 
+      let researchDossier = '';
+      try {
+        // Include the user's requested visuals in the query.  A topic-only
+        // query (for example "2026 technology trends") can miss the public
+        // report/statistics pages needed to populate an explicitly requested
+        // chart or comparison table.
+        const researchQuery = `${brief.topic || requirementPrompt} ${/圖表|折線圖|長條圖|圓餅圖|chart|table/i.test(String(prompt || '')) ? 'statistics report data' : ''}`.trim();
+        const research = await collectVerifiedResearch(researchQuery);
+        researchDossier = formatResearchDossier(research);
+        console.log(`[Server] [Research] 查證來源：${research.sources.length} 筆 (${research.status})`);
+      } catch (researchError) {
+        console.warn('[Server] [Research] 查證服務暫時不可用：', researchError.message);
+        researchDossier = formatResearchDossier({ status: 'unavailable', sources: [] });
+      }
+
       const stage1UserMessage = [
         briefSummary,
+        '',
+        uploadedSourceContext,
+        uploadedSourceContext ? '' : null,
+        existingDeckContext,
+        existingDeckContext ? '' : null,
+        researchDossier,
         '',
         `【對話歷史】：\n${JSON.stringify(filteredHistory)}`,
         '',
@@ -621,17 +981,74 @@ app.post('/api/edit', upload.single('file'), async (req, res) => {
           contentStrategistPrompt
         );
         semanticBlueprint = parseAIJSON(stage1Reply);
+        applyUploadedSourceTitle(semanticBlueprint, uploadedSourceTitle);
+        if (brief.brandProfile === 'dataeco') {
+          semanticBlueprint.brandProfile = 'dataeco';
+          semanticBlueprint.templateProfile = null;
+          semanticBlueprint.templateColorOverride = null;
+          semanticBlueprint.theme = {
+            ...(semanticBlueprint.theme || {}),
+            brandProfile: 'dataeco',
+            primary: '#01A964', secondary: '#3ABA8D', accent: '#008A45',
+            bg: '#FFFFFF', background: '#FFFFFF', surfaceColor: '#DDF4E9',
+            textDark: '#101828', textLight: '#FFFFFF',
+            accentPalette: ['#01A964', '#3ABA8D', '#76D7A8', '#008A45'],
+          };
+        }
         const requiredPageCount = Number.parseInt(String(brief.pageCount || ''), 10);
-        if (Number.isFinite(requiredPageCount) && requiredPageCount > 0 && semanticBlueprint?.slides?.length !== requiredPageCount) {
-          console.warn(`[Server] [Agent 1] 頁數不符：要求 ${requiredPageCount} 頁，收到 ${semanticBlueprint?.slides?.length || 0} 頁，正在自動重新規劃…`);
+        // In insertion mode the requested count is a hard output cap.  Do not
+        // ask the strategist to rebuild a whole deck merely because it returned
+        // more slides than were requested; the final guard below keeps only the
+        // exact number of new slides.
+        const initialPageMismatch = !isInsertionMode
+          && Number.isFinite(requiredPageCount)
+          && requiredPageCount > 0
+          && semanticBlueprint?.slides?.length !== requiredPageCount;
+        const initialEvidenceViolation = getEvidencePolicyViolation(semanticBlueprint);
+        if (initialPageMismatch || initialEvidenceViolation) {
+          console.warn(`[Server] [Agent 1] ${initialPageMismatch ? `頁數不符：要求 ${requiredPageCount} 頁，收到 ${semanticBlueprint?.slides?.length || 0} 頁。` : ''}${initialEvidenceViolation ? `資料規則不符：${initialEvidenceViolation}。` : ''} 正在自動重新規劃…`);
           const repairReply = await callBedrock(
-            [{ role: 'user', content: `${stage1UserMessage}\n\n【強制修正】你剛剛輸出的投影片數量不正確。請完整重新輸出 Semantic JSON，slides 必須剛好有 ${requiredPageCount} 頁；不可少頁、不可以摘要取代頁面、不可輸出說明文字。` }],
+            [{ role: 'user', content: `${stage1UserMessage}\n\n【強制修正】請完整重新輸出 Semantic JSON。slides 必須剛好有 ${requiredPageCount} 頁；不可少頁、不可以摘要取代頁面、不可輸出說明文字。可查證資料的 chart/table 必須標示 dataClass: "real"。若使用者要求圖表但尚缺資料，保留 chart/table 的視覺位置，標示 dataClass: "pending"，且不可填入任何數值或資料列；不得使用 scenario 或虛構數據。` }],
             contentStrategistPrompt
           );
           semanticBlueprint = parseAIJSON(repairReply);
+          applyUploadedSourceTitle(semanticBlueprint, uploadedSourceTitle);
+          if (brief.brandProfile === 'dataeco') {
+            semanticBlueprint.brandProfile = 'dataeco';
+            semanticBlueprint.templateProfile = null;
+            semanticBlueprint.templateColorOverride = null;
+            semanticBlueprint.theme = {
+              ...(semanticBlueprint.theme || {}),
+              brandProfile: 'dataeco',
+              primary: '#01A964', secondary: '#3ABA8D', accent: '#008A45',
+              bg: '#FFFFFF', background: '#FFFFFF', surfaceColor: '#DDF4E9',
+              textDark: '#101828', textLight: '#FFFFFF',
+              accentPalette: ['#01A964', '#3ABA8D', '#76D7A8', '#008A45'],
+            };
+          }
+        }
+        // This is the server-side final guard for an insertion. Even if an
+        // upstream agent ignores the brief and returns a full deck, only the
+        // requested new slides are allowed to leave this endpoint.
+        if (isInsertionMode && Array.isArray(semanticBlueprint?.slides)) {
+          semanticBlueprint.slides = semanticBlueprint.slides.slice(0, requestedInsertCount);
+        }
+        if (!isInsertionMode && Number.isFinite(requiredPageCount) && requiredPageCount > 0
+          && trimBlueprintToPageCount(semanticBlueprint, requiredPageCount)) {
+          console.warn(`[Server] [Agent 1] 模型回傳頁數超出要求，已保留封面與結尾並裁切為 ${requiredPageCount} 頁。`);
+        }
+        if (brief.brandProfile === 'dataeco') {
+          enforceDataEcoFrameworkTemplates(
+            semanticBlueprint,
+            Array.isArray(brief.mustInclude) ? brief.mustInclude.join(' ') : String(prompt || '')
+          );
         }
         if (Number.isFinite(requiredPageCount) && requiredPageCount > 0 && semanticBlueprint?.slides?.length !== requiredPageCount) {
           throw new Error(`企劃大綱頁數不符：要求 ${requiredPageCount} 頁，實際 ${semanticBlueprint?.slides?.length || 0} 頁`);
+        }
+        const evidenceViolation = getEvidencePolicyViolation(semanticBlueprint);
+        if (evidenceViolation) {
+          throw new Error(`企劃大綱資料不符：${evidenceViolation}`);
         }
         console.log(`[Server] [Agent 1] 企劃完成，共規劃了 ${semanticBlueprint?.slides?.length || 0} 頁`);
       } catch (e) {

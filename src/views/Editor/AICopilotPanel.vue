@@ -135,6 +135,10 @@ const { importPPTXFile } = useImport()
 const prompt = ref('')
 const loading = ref(false)
 const attachedFile = ref<File | null>(null)
+// Keep the original source attached through the one allowed requirement
+// follow-up. Previously it was cleared after the first request, so a reply
+// such as "1A 2B 3C 4D" reached the Navigator with no PDF/DOCX/TXT/MD text.
+const requirementSourceFile = ref<File | null>(null)
 const chatRef = useTemplateRef<HTMLElement>('chatRef')
 const fileInputRef = useTemplateRef<HTMLInputElement>('fileInputRef')
 
@@ -146,10 +150,16 @@ interface PendingInsertion {
   /** Array.splice 使用的零起點插入位置 */
   index: number
   label: string
+  /** Number of new slides requested; this is never the final deck length. */
+  count: number
 }
 
 /** 僅在「加頁／插入」需求時啟用；完整生成仍維持覆蓋整份簡報的既有行為。 */
 const pendingInsertion = ref<PendingInsertion | null>(null)
+// Preserve an insertion target through a requirements follow-up. Without this
+// state, the short answer (for example "DD 國泰") looked like a fresh request
+// and the server was allowed to regenerate an entire deck.
+const requirementInsertion = ref<PendingInsertion | null>(null)
 
 interface Message {
   role: 'user' | 'assistant'
@@ -157,6 +167,28 @@ interface Message {
 }
 const messages = ref<Message[]>([])
 const elementEditTargetId = ref('')
+
+// A follow-up such as「在第四頁後新增文獻探討時間軸」has no attachment
+// payload any more. Send a compact digest of the current deck so the new
+// page continues the actual report instead of inventing generic milestones.
+const stripDeckHtml = (value: unknown) => String(value || '')
+  .replace(/<[^>]*>/g, ' ')
+  .replace(/&nbsp;/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+
+const buildDeckContext = () => slides.value.slice(0, 30).map((slide: any, index: number) => {
+  const parts = (slide?.elements || []).flatMap((element: any) => {
+    if (['title', 'subtitle', 'text'].includes(element?.type)) return [stripDeckHtml(element.content)]
+    if (element?.type === 'bullets') return Array.isArray(element.content) ? element.content.map(stripDeckHtml) : []
+    if (element?.type === 'card') return [stripDeckHtml(element.content?.title), stripDeckHtml(element.content?.text)]
+    if (element?.type === 'table') return [
+      ...(element?.data?.rows || []).flatMap((row: any) => Array.isArray(row) ? row.map(stripDeckHtml) : []),
+    ]
+    return []
+  }).filter(Boolean).slice(0, 24)
+  return `投影片 ${index + 1}：${parts.join('；')}`
+}).filter((line: string) => line !== '投影片 ：').join('\n').slice(0, 30000)
 
 const scrollToBottom = () => {
   if (chatRef.value) {
@@ -168,7 +200,9 @@ const clearMessages = () => {
   messages.value = []
   pendingBlueprint.value = null
   pendingInsertion.value = null
+  requirementInsertion.value = null
   attachedFile.value = null
+  requirementSourceFile.value = null
   prompt.value = ''
   awaitingRequirementReply.value = false
 }
@@ -181,28 +215,49 @@ const detectSlideInsertion = (text: string): PendingInsertion | null => {
   if (slides.value.length === 0) return null
 
   const normalized = text.replace(/\s+/g, '')
-  const isAddRequest = /(?:再)?(?:多加|新增|增加|插入|加上).{0,12}(?:一|1|幾)?頁/.test(normalized)
+  // Deterministic fast path for a precise insertion target. It runs before
+  // heuristic intent matching so a command such as「第七頁後面新增」cannot
+  // silently fall through to the last-slide default.
+  const explicitAfterPage = normalized.match(/\u7b2c([\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\d]+)\u9801(?:\u5f8c\u9762|\u5f8c)/)
+  const ordinalMap: Record<string, number> = {
+    '\u4e00': 1, '\u4e8c': 2, '\u4e09': 3, '\u56db': 4, '\u4e94': 5,
+    '\u516d': 6, '\u4e03': 7, '\u516b': 8, '\u4e5d': 9, '\u5341': 10,
+  }
+  if (explicitAfterPage && /(?:\u65b0\u589e|\u52a0|\u63d2\u5165)/.test(normalized)) {
+    const page = Number(explicitAfterPage[1]) || ordinalMap[explicitAfterPage[1]] || 0
+    if (page > 0) return { index: Math.min(page, slides.value.length), label: `第${page} 頁後`, count: 1 }
+  }
+  const countToken = normalized.match(/(?:新增|增加|多加|插入|加上|加)([一二三四五六七八九十\d]+)頁/)?.[1] || '一'
+  const chineseCounts: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
+  const requestedCount = Math.min(10, Math.max(1, Number(countToken) || chineseCounts[countToken] || 1))
+  const parsePageToken = (token: string) => Number(token) || chineseCounts[token] || 0
+  const isAddRequest = /(?:再)?(?:多加|新增|增加|插入|加上|加).{0,12}(?:一|1|幾)?頁/.test(normalized)
     || (/(?:目錄|toc)/i.test(normalized) && /(?:封面後|第\d+頁[前後]|最前面|開頭|最後|結尾)/.test(normalized))
   const isFullDeckRequest = /(?:重新|整份|全部|完整).{0,8}(?:生成|製作|建立)/.test(normalized)
   if (!isAddRequest || isFullDeckRequest) return null
 
-  if (/(?:封面後|第1頁後)/.test(normalized)) return { index: Math.min(1, slides.value.length), label: '封面後' }
-  if (/(?:最前面|開頭|第一頁前)/.test(normalized)) return { index: 0, label: '簡報開頭' }
-  if (/(?:最後|結尾|末尾)/.test(normalized)) return { index: slides.value.length, label: '簡報最後' }
+  if (/(?:封面後|第1頁後)/.test(normalized)) return { index: Math.min(1, slides.value.length), label: '封面後', count: requestedCount }
+  if (/(?:最前面|開頭|第一頁前)/.test(normalized)) return { index: 0, label: '簡報開頭', count: requestedCount }
+  if (/(?:最後|結尾|末尾)/.test(normalized)) return { index: slides.value.length, label: '簡報最後', count: requestedCount }
 
-  const afterMatch = normalized.match(/第(\d+)頁後/)
+  // 支援「第二頁後面」這類中文序數與口語位置；未辨識位置才採用目前頁後。
+  const afterMatch = normalized.match(/第([一二三四五六七八九十\d]+)頁(?:後面|後)/)
   if (afterMatch) {
-    const page = Number(afterMatch[1])
-    return { index: Math.min(Math.max(page, 0), slides.value.length), label: `第 ${page} 頁後` }
+    const page = parsePageToken(afterMatch[1])
+    if (page > 0) {
+      return { index: Math.min(page, slides.value.length), label: `第 ${page} 頁後`, count: requestedCount }
+    }
   }
 
-  const beforeMatch = normalized.match(/第(\d+)頁前/)
+  const beforeMatch = normalized.match(/第([一二三四五六七八九十\d]+)頁(?:前面|前)/)
   if (beforeMatch) {
-    const page = Number(beforeMatch[1])
-    return { index: Math.min(Math.max(page - 1, 0), slides.value.length), label: `第 ${page} 頁前` }
+    const page = parsePageToken(beforeMatch[1])
+    if (page > 0) {
+      return { index: Math.min(Math.max(page - 1, 0), slides.value.length), label: `第 ${page} 頁前`, count: requestedCount }
+    }
   }
 
-  return { index: Math.min(slidesStore.slideIndex + 1, slides.value.length), label: '目前投影片後' }
+  return { index: Math.min(slidesStore.slideIndex + 1, slides.value.length), label: '目前投影片後', count: requestedCount }
 }
 
 /**
@@ -233,6 +288,7 @@ const handleFileSelect = (e: Event) => {
 
 const removeAttachment = () => {
   attachedFile.value = null
+  requirementSourceFile.value = null
 }
 
 /** 解碼 Axios 錯誤中可能以 ArrayBuffer 格式回傳的 JSON 錯誤訊息 */
@@ -260,11 +316,14 @@ const confirmGenerate = async () => {
 
     if (generatedSlides && generatedSlides.length > 0) {
       const insertion = pendingInsertion.value
+      // Client-side final guard: insertion can never append a regenerated
+      // deck, even if a remote backend is running an older release.
+      const insertionSlides = insertion ? generatedSlides.slice(0, insertion.count) : generatedSlides
       const existingSlideCount = slides.value.length
       if (insertion) {
         const insertionIndex = Math.min(Math.max(insertion.index, 0), existingSlideCount)
         const nextSlides = [...slides.value]
-        nextSlides.splice(insertionIndex, 0, ...generatedSlides)
+        nextSlides.splice(insertionIndex, 0, ...insertionSlides)
         slidesStore.setSlides(nextSlides)
         slidesStore.updateSlideIndex(insertionIndex)
       } else {
@@ -276,10 +335,11 @@ const confirmGenerate = async () => {
       
       pendingBlueprint.value = null
       pendingInsertion.value = null
+      requirementInsertion.value = null
       messages.value.push({
         role: 'assistant',
         content: insertion
-          ? `✅ 已插入 ${generatedSlides.length} 頁至${insertion.label}，原有 ${existingSlideCount} 頁已保留。`
+          ? `✅ 已插入 ${insertionSlides.length} 頁至${insertion.label}`
           : `✅ 已完成 (共 ${generatedSlides.length} 頁)`,
       })
     } else {
@@ -298,7 +358,9 @@ const confirmGenerate = async () => {
 const cancelGenerate = () => {
   pendingBlueprint.value = null
   pendingInsertion.value = null
+  requirementInsertion.value = null
   awaitingRequirementReply.value = false
+  requirementSourceFile.value = null
   messages.value.push({ role: 'assistant', content: '已取消生成。您可以修改需求後重新輸入。' })
   nextTick(scrollToBottom)
 }
@@ -314,16 +376,17 @@ const sendPrompt = async () => {
   if ((!prompt.value.trim() && !attachedFile.value) || loading.value) return
 
   const userText = prompt.value.trim()
-  const fileToSend = attachedFile.value
+  const newlyAttachedFile = attachedFile.value
 
   // 【修正】若目前有待確認的藍圖，使用者的輸入視為對藍圖的修改意見，
   // 應強制以 'generate' 意圖重新規劃藍圖，而非修改當前投影片
   const isBlueprintFeedback = !!pendingBlueprint.value
   const explicitInsertion = detectSlideInsertion(userText)
+  if (explicitInsertion && !isBlueprintFeedback) requirementInsertion.value = explicitInsertion
   const insertionRequest = isBlueprintFeedback
     ? pendingInsertion.value
-    : explicitInsertion || (shouldAppendGeneratedSlides(userText)
-      ? { index: slides.value.length, label: '簡報最後' }
+    : explicitInsertion || (awaitingRequirementReply.value ? requirementInsertion.value : null) || (shouldAppendGeneratedSlides(userText)
+      ? { index: slides.value.length, label: '簡報最後', count: 1 }
       : null)
 
   // 逃生出口：若在等待問卷回答時，輸入了明顯的編輯指令，則自動放棄問卷狀態，恢復一般 AI 判斷流程
@@ -336,10 +399,12 @@ const sendPrompt = async () => {
     }
   }
   const isRequirementFollowup = !isBlueprintFeedback && awaitingRequirementReply.value
+  const fileToSend = newlyAttachedFile || (isRequirementFollowup ? requirementSourceFile.value : null)
+  if (newlyAttachedFile && !isRequirementFollowup) requirementSourceFile.value = newlyAttachedFile
 
   // 顯示使用者訊息
-  const displayText = fileToSend
-    ? (userText ? `${userText}\n📎 ${fileToSend.name}` : `📎 ${fileToSend.name}`)
+  const displayText = newlyAttachedFile
+    ? (userText ? `${userText}\n📎 ${newlyAttachedFile.name}` : `📎 ${newlyAttachedFile.name}`)
     : userText
 
   prompt.value = ''
@@ -389,7 +454,12 @@ const sendPrompt = async () => {
       formData.append('prompt', finalPrompt)
       formData.append('requirementPrompt', userText)
       formData.append('slideData', JSON.stringify(currentSlide.value))
+      formData.append('deckContext', buildDeckContext())
       formData.append('chatHistory', JSON.stringify(messages.value))
+      if (insertionRequest) {
+        formData.append('insertionMode', 'true')
+        formData.append('requestedInsertCount', String(insertionRequest.count))
+      }
       if (isTargetedElementEdit) {
         formData.append('forceIntent', 'edit')
       } else if (isAwaitingReply) {
@@ -411,7 +481,12 @@ const sendPrompt = async () => {
         prompt: finalPrompt,
         requirementPrompt: userText,
         slideData: currentSlide.value,
+        deckContext: buildDeckContext(),
         chatHistory: messages.value,
+      }
+      if (insertionRequest) {
+        payload.insertionMode = true
+        payload.requestedInsertCount = insertionRequest.count
       }
       if (isTargetedElementEdit) {
         payload.forceIntent = 'edit'
@@ -440,9 +515,16 @@ const sendPrompt = async () => {
           awaitingRequirementReply.value = true
         }
         const questionText = (response.data.questions || []).map((q: string) => '• ' + q).join('\n')
+        const sourceMeta = response.data.sourceMeta
+        // Keep the conversation compact. The attachment itself remains the
+        // source of truth on the server, so title/character diagnostics do
+        // not need to be shown to the user here.
+        const sourceReadText = sourceMeta
+          ? `\n\n📎 已讀取附件：${sourceMeta.fileName}`
+          : ''
         messages.value.push({ 
           role: 'assistant', 
-          content: '為了給您最完美的簡報，請幫我補充以下資訊：\n' + questionText 
+          content: '為了給您最完美的簡報，請幫我補充以下資訊：\n' + questionText + sourceReadText
         })
 
       } else if (intent === 'edit') {
@@ -526,11 +608,13 @@ const sendPrompt = async () => {
 
       } else if (intent === 'generate') {
         awaitingRequirementReply.value = false
+        requirementSourceFile.value = null
         // ---- 新架構：收到 blueprint，顯示摘要等待使用者確認 ----
         const blueprint = response.data.blueprint
         // 以新藍圖取代舊的（包含使用者對藍圖提出修改意見後重新生成的情況）
         pendingBlueprint.value = blueprint
         pendingInsertion.value = insertionRequest
+        requirementInsertion.value = null
 
         const slideCount = blueprint?.slides?.length || 0
         const typeLabels: Record<string, string> = {

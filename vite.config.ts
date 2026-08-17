@@ -6,26 +6,18 @@ import { FileSystemIconLoader } from 'unplugin-icons/loaders'
 import IconsResolver from 'unplugin-icons/resolver'
 import Components from 'unplugin-vue-components/vite'
 
-// https://vitejs.dev/config/
 export default defineConfig({
   base: '',
   plugins: [
     vue(),
     Components({
       dirs: [],
-      resolvers: [
-        IconsResolver({
-          prefix: 'i',
-          customCollections: ['custom'],
-        }),
-      ],
+      resolvers: [IconsResolver({ prefix: 'i', customCollections: ['custom'] })],
     }),
     Icons({
       compiler: 'vue3',
-      autoInstall: false, 
-      customCollections: {
-        custom: FileSystemIconLoader('src/assets/icons'),
-      },
+      autoInstall: false,
+      customCollections: { custom: FileSystemIconLoader('src/assets/icons') },
       scale: 1,
       defaultClass: 'i-icon',
     }),
@@ -34,17 +26,15 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     watch: {
-      // `work/` is reserved for generated previews, audits, and other transient artifacts.
-      // On Windows those files can remain locked while an external app exports them;
-      // they are not source inputs and must never crash Vite's watcher.
-      ignored: ['**/skills/**', '**/skill/**', '**/skills-main/**', '**/.gemini/**', '**/對話紀錄.md', '**/work/**']
+      // Generated files may remain locked on Windows. They are not Vite source inputs.
+      ignored: ['**/skills/**', '**/skill/**', '**/skills-main/**', '**/.gemini/**', '**/work/**', '**/temp_skill.bin'],
     },
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:3000',
         changeOrigin: true,
-      }
-    }
+      },
+    },
   },
   css: {
     preprocessorOptions: {
@@ -52,13 +42,11 @@ export default defineConfig({
         additionalData: `
           @import '@/assets/styles/variable.scss';
           @import '@/assets/styles/mixin.scss';
-        `
+        `,
       },
     },
   },
   resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
-    }
-  }
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+  },
 })

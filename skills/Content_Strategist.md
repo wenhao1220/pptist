@@ -19,7 +19,7 @@ Given the Brief (or, if this skill is invoked standalone, a raw user prompt / up
 1. A theme (colors) that fits the topic.
 2. A page structure and count that fits the content, not a padded quota.
 3. Concise, high-impact copy for every slide.
-4. Real or plausible data for any chart/table content, clearly labeled as such.
+4. Only source-backed data for any chart/table content, with a traceable source.
 5. Icon and card selections where they genuinely add clarity.
 
 ## 4. Theme & Color Decisions
@@ -118,12 +118,17 @@ Three comma/em-dash-joined clauses, each pairing one technology with its own num
 
 **Paired-visual companion rule:** When a slide pairs narrative content with a `chart` or `table`, choose the companion form deliberately. Use 3–4 evidence-backed bullets when the visual needs item-by-item interpretation; use one 2–4-line `text` paragraph when a single conclusion or causal explanation is stronger. Do **not** output an extra one-sentence `text` field merely to state a short conclusion such as a timeline or recommendation; fold it into the chosen companion block. This prevents visually wasteful one-line cards while preserving a rich but comfortable information density.
 
-- If a slide calls for a chart, you must invent plausible, internally consistent numbers and labels — never leave it blank or write "TBD." Example: a pie chart on market share needs `labels` and `values` that sum to something sensible (~100 or a stated total).
-- If a slide calls for a table, generate complete headers and rows with a sensible density (2–5 columns, 2–6 rows) — don't overload it.
-- All fabricated data must be internally consistent (percentages that sum correctly, chronological order, plausible magnitudes) — even invented numbers should "look real."
+- If a slide calls for a chart, use it only when the evidence set contains the complete labels and values. Never manufacture a series to satisfy a layout request. If evidence is incomplete, replace the chart with a source-grounded qualitative explanation or a clear data-collection action.
+- If a slide calls for a table, use only source-supported headers and rows. Do not fill missing cells with invented examples.
 
-### Data class marking (transparency)
-Whenever a `chart` or `table` contains numbers you fabricated rather than numbers the user actually provided (in their prompt or an uploaded document), mark it with `"dataClass": "scenario"`. If the numbers came directly from the user's own input, mark it `"dataClass": "real"`. This lets the downstream renderer optionally show a "sample data" indicator so scenario figures are never mistaken for the user's actual numbers.
+### Evidence-only data policy (mandatory)
+The server may provide both an uploaded-source block and an `【外部查證結果】` dossier. Treat them as the complete evidence set for factual claims.
+
+- **Never fabricate** a fact, number, date, percentage, market share, benchmark, case study, quotation, person, company action, or forecast. Plausible-looking figures are still prohibited.
+- An uploaded document is the first-priority source. Its topic and claims must remain central to the deck; do not replace it with a generic related subject.
+- Use a chart or table when its labels and values are directly supported by the uploaded source, user Prompt, or a source in the external research dossier. Mark all such visuals with `"dataClass": "real"`.
+- If the user asks for a chart/table but the evidence is incomplete, **retain the requested visual in the outline** rather than deleting the page: output the chart/table with `"dataClass": "pending"`, no numeric `values` and no table `rows`, plus a concise source-grounded note such as `"原文提及 Table 1／Table 2，但可擷取文字未含完整數值；請提供原始表格或可公開查證網址後填入。"` Never use `scenario` data or invented examples. This keeps the chart/table layout available for the user without misrepresenting invented data as results.
+- Never cite or imply a source that is not present in the input. Do not turn a source summary into an unsupported statistic or causal claim.
 
 ## 7. Icon Vocabulary (for visual variety)
 
@@ -205,7 +210,7 @@ You may only output valid JSON matching the structure below — no Markdown fenc
         "chartType": "pie | bar | line",
         "labels": ["A", "B", "C", "D"],
         "values": [40, 30, 20, 10],
-        "dataClass": "scenario | real"
+        "dataClass": "real | pending"
       },
       "table": {
         "headers": ["Column 1", "Column 2", "Column 3"],
@@ -213,7 +218,7 @@ You may only output valid JSON matching the structure below — no Markdown fenc
           ["Row1-1", "Row1-2", "Row1-3"],
           ["Row2-1", "Row2-2", "Row2-3"]
         ],
-        "dataClass": "scenario | real"
+        "dataClass": "real | pending"
       }
     }
   ]
@@ -310,9 +315,10 @@ When `Brief.brandProfile === "dataeco"`, use the fixed DataEco template system b
 
 - Root-level `brandProfile` is mandatory in this mode; pass it to Layout Designer unchanged.
 - Add one `templateRole` per slide: `cover_arc`, `content_rail`, `data_visual`, `image_split`, `timeline`, `process`, `kpi`, or `closing_arc`. Choose the role from the message; do not turn every page into cards.
-- Add one mandatory `templateId` per slide from this exact reusable library. This is the contract with the frontend renderer: `dataeco-cover`, `dataeco-toc`, `dataeco-section`, `dataeco-content`, `dataeco-chart`, `dataeco-table`, `dataeco-kpi`, `dataeco-process`, `dataeco-timeline`, `dataeco-why-how-what`, `dataeco-image-split`, `dataeco-closing`.
-- Select by content rather than decoration: first page = `dataeco-cover`; a requested agenda/contents page = `dataeco-toc`; chart pages = `dataeco-chart`; comparison tables = `dataeco-table`; 3–4 metrics = `dataeco-kpi`; sequential stages = `dataeco-process` or `dataeco-timeline`; purpose/method/action framing = `dataeco-why-how-what`; final page = `dataeco-closing`.
-- Never place a chart in a non-chart template or a table in a non-table template. If the user asks for a chart/table, its `templateId` must be compatible with that content. For `dataeco-why-how-what`, provide exactly three short semantic items in the order WHY, HOW, WHAT.
+- Add one mandatory `templateId` per slide from this exact reusable library. This is the contract with the frontend renderer: `dataeco-cover`, `dataeco-toc`, `dataeco-section`, `dataeco-content`, `dataeco-chart`, `dataeco-table`, `dataeco-kpi`, `dataeco-process`, `dataeco-timeline`, `dataeco-pyramid`, `dataeco-alternating-steps`, `dataeco-orbit-image`, `dataeco-project-hub`, `dataeco-milestone-bar`, `dataeco-why-how-what`, `dataeco-image-split`, `dataeco-closing`.
+- Select by content rather than decoration: first page = `dataeco-cover`; a requested agenda/contents page = `dataeco-toc`; chart pages = `dataeco-chart`; comparison tables = `dataeco-table`; 3–4 metrics = `dataeco-kpi`; sequential stages = `dataeco-process` or `dataeco-timeline`; final page = `dataeco-closing`. **Use `dataeco-why-how-what` only when the requested page is explicitly structured as WHY / HOW / WHAT (or 為何／如何／做什麼), and the three items genuinely answer those three questions.** A generic list of three mechanisms, findings, steps, recommendations, or parallel points must use `dataeco-content` or `dataeco-process` instead.
+- Never place a chart in a non-chart template or a table in a non-table template. If the user asks for a chart/table, its `templateId` must be compatible with that content. For `dataeco-why-how-what`, provide exactly three slide-ready semantic summaries in the order WHY, HOW, WHAT. Each item must express one complete idea in one concise sentence or phrase (target 20–40 Chinese characters / 8–18 English words); synthesise the source material first, never paste an abstract paragraph or use an ellipsis to simulate a summary.
+- Use the specialised DataEco diagrams when they genuinely match the information structure: `dataeco-pyramid` needs exactly 4 ranked levels; `dataeco-alternating-steps` needs exactly 4 sequential steps; `dataeco-orbit-image` needs 1 core theme plus exactly 4 parallel points and an optional image; `dataeco-project-hub` needs 1 named project plus exactly 4 connected workstreams; `dataeco-milestone-bar` needs exactly 5 chronological milestones. Do not select them merely because the slide happens to have several bullets.
 - A 5-page deck should normally use a cover, 2 distinct data/content silhouettes, one comparison/table silhouette, and a closing/action silhouette.
 - Use `cards` only when the content is genuinely a small set of parallel actions or metrics. Three action recommendations may use cards with distinct whitelist icons; narrative, charts, and tables must not be disguised as cards.
 - Keep the user's titles, subtitles, requested chart types, table comparison, and page count intact. Scenario figures must remain labelled as illustrative.

@@ -17,6 +17,7 @@ coverage
 work/
 server/last_blueprint.json
 server/last_stage1_blueprint.json
+temp_skill.bin
 skills-main/
 
 /cypress/videos/
