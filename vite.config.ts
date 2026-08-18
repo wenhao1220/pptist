@@ -7,7 +7,7 @@ import IconsResolver from 'unplugin-icons/resolver'
 import Components from 'unplugin-vue-components/vite'
 
 export default defineConfig({
-  base: '',
+  base: '/ppt/',
   plugins: [
     vue(),
     Components({

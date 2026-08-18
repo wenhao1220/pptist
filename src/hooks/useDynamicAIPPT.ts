@@ -698,7 +698,7 @@ export default function useDynamicAIPPT() {
         const treeOnDarkSurface = brandChrome === 'contentRail' || isDark(bg);
         elements.push({
           type: 'image', id: createId(), left: 15, top: H - 51, width: 35, height: 28,
-          src: treeOnDarkSurface ? '/assets/dataeco-tree-white.png' : '/assets/dataeco-tree-green.png',
+          src: treeOnDarkSurface ? `${import.meta.env.BASE_URL}assets/dataeco-tree-white.png` : `${import.meta.env.BASE_URL}assets/dataeco-tree-green.png`,
           fixedRatio: true, rotate: 0, lock: false, imageType: 'background',
         } as PPTImageElement);
       }
