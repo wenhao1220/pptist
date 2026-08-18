@@ -50,7 +50,11 @@ app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
 }));
-app.use(cors({
+// CORS only applies to API calls. Applying it globally also blocks static
+// frontend files when the browser sends a same-origin Origin header.
+// Support both the original root API and the shared-ALB /ppt/api prefix.
+const apiRoutePrefixes = ['/api', '/ppt/api'];
+app.use(apiRoutePrefixes, cors({
   origin(origin, callback) {
     // Same-origin server rendering and non-browser health checks have no
     // Origin header. Cross-origin browser requests must be explicitly listed.
@@ -61,8 +65,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type'],
   maxAge: 86400,
 }));
-app.use(express.json({ limit: '5mb' }));
-app.use('/api', rateLimit({
+app.use(apiRoutePrefixes, express.json({ limit: '5mb' }));
+app.use(apiRoutePrefixes, rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: apiRequestLimit,
   standardHeaders: 'draft-7',
@@ -85,7 +89,7 @@ const upload = multer({
   },
 });
 
-app.post('/api/feedback', async (req, res) => {
+app.post(['/api/feedback', '/ppt/api/feedback'], async (req, res) => {
   const message = String(req.body?.message || '').trim();
   const pageTitle = String(req.body?.pageTitle || '').trim();
   const webhookUrl = String(process.env.GOOGLE_FEEDBACK_WEBHOOK_URL || '').trim();
@@ -676,7 +680,7 @@ function detectTemplateColorOverride(prompt) {
 // =========================================================
 // 路由：POST /api/edit — 意圖偵測與編輯（維持純 JSON 回傳）
 // =========================================================
-app.post('/api/edit', upload.single('file'), async (req, res) => {
+app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res) => {
   try {
     let prompt = req.body.prompt;
     let requirementPrompt = req.body.requirementPrompt;
@@ -1280,6 +1284,11 @@ app.get('/health', (_req, res) => {
 // address or a secret in the browser bundle.
 if (process.env.NODE_ENV === 'production') {
   const clientDist = join(__dirname, '../dist');
+  // The shared ALB forwards the single /ppt* path to this service. Mounting
+  // static files at /ppt strips that prefix before resolving files in dist.
+  app.use('/ppt', express.static(clientDist));
+  app.use('/ppt', (_req, res) => res.sendFile(join(clientDist, 'index.html')));
+  // Keep the root mount for the existing SSM/local test URL.
   app.use(express.static(clientDist));
   app.get('*', (_req, res) => res.sendFile(join(clientDist, 'index.html')));
 }
