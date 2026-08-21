@@ -283,7 +283,7 @@ export default function useDynamicAIPPT() {
       // These five source-template pages are fixed diagrams.  The renderer
       // owns their geometry so the AI only supplies slide-ready content.
       if (isDataEco && ['dataeco-pyramid', 'dataeco-alternating-steps', 'dataeco-orbit-image', 'dataeco-project-hub', 'dataeco-milestone-bar'].includes(spec.templateId)) {
-        const sourceTitle = spec.title || rawElements.find((el: any) => el.type === 'title')?.content || '重點架構';
+        const sourceTitle = spec.title || rawElements.find((el: any) => el.type === 'title')?.content || '';
         const bulletElement = rawElements.find((el: any) => el.type === 'bullets');
         const sourceSubtitle = String(spec.subtitle || rawElements.find((el: any) => el.type === 'subtitle')?.content || '').trim();
         const cards = rawElements.filter((el: any) => el.type === 'card').map((el: any) =>
@@ -323,7 +323,12 @@ export default function useDynamicAIPPT() {
           .concat(spec.summary ? [spec.summary] : [])
           .concat(spec.description ? [spec.description] : [])
           .map((item: any) => String(item || '').trim()).filter(Boolean);
-        const itemAt = (index: number, fallback: string) => toSlideSummary(sourceItems[index] || fallback, 42);
+        const semanticPoints = (Array.isArray(spec.content_points) ? spec.content_points : [])
+          .map((item: any) => String(item || '').trim()).filter(Boolean);
+        // Never manufacture template labels when an upstream slot is empty.
+        // The server rejects incomplete specialised templates before render;
+        // this final guard keeps old/stale blueprints from showing fake copy.
+        const itemAt = (index: number, _fallback: string) => toSlideSummary(sourceItems[index] || '', 42);
         const addText = (left: number, top: number, width: number, height: number, content: string, fontSize = 16, color = '#101828', bold = false, align = 'left') => {
           elements.push({
             type: 'text', id: createId(), left, top, width, height,
@@ -347,9 +352,18 @@ export default function useDynamicAIPPT() {
         addText(125, 58, 760, 50, sourceTitle, 34, '#101828', true);
 
         if (spec.templateId === 'dataeco-pyramid') {
-          addText(125, 120, 280, 82, itemAt(0, '請說明金字塔所呈現的核心層級'), 16);
+          // Semantic content arrives as [insight, level 1..4].  Do not use
+          // Agent 2's long introductory paragraph as a pyramid level: the
+          // narrow top tier cannot display it and the real layer labels then
+          // appear to be missing.
+          const pyramidSource = semanticPoints.length >= 4 ? semanticPoints : sourceItems;
+          const pyramidLevels = pyramidSource.length >= 4 ? pyramidSource.slice(-4) : pyramidSource;
+          const pyramidInsight = semanticPoints.length >= 5
+            ? semanticPoints[0]
+            : (sourceSubtitle || sourceItems[0] || '');
+          addText(125, 120, 280, 82, toSlideSummary(sourceSubtitle || pyramidInsight, 44), 16);
           addRect(190, 290, 190, 64, '#F5FF64');
-          addText(212, 311, 140, 26, itemAt(4, '關鍵洞察'), 16, '#008A45', true, 'center');
+          addText(204, 303, 164, 42, toSlideSummary(pyramidInsight, 24), 14, '#008A45', true, 'center');
           const levels = [
             { left: 610, top: 125, width: 140, height: 90, color: '#99E891' },
             { left: 550, top: 223, width: 260, height: 92, color: '#6DD9A7' },
@@ -362,58 +376,85 @@ export default function useDynamicAIPPT() {
               viewBox: [200, 200], path: 'M 20 0 L 180 0 L 200 200 L 0 200 Z', fill: level.color,
               outline: { color: level.color, width: 0, style: 'solid' }, rotate: 0, fixedRatio: false,
             } as PPTShapeElement);
-            addText(level.left + 14, level.top + level.height / 2 - 13, level.width - 28, 28, itemAt(index, `層級 ${index + 1}`), 16, '#FFFFFF', true, 'center');
+            const levelText = toSlideSummary(pyramidLevels[index] || '', index === 0 ? 12 : 20);
+            addText(level.left + 12, level.top + level.height / 2 - 14, level.width - 24, 32, levelText, index === 0 ? 12 : 15, '#FFFFFF', true, 'center');
           });
         } else if (spec.templateId === 'dataeco-alternating-steps') {
           const positions = [
-            { x: 125, y: 145 }, { x: 420, y: 360 }, { x: 590, y: 145 }, { x: 785, y: 360 },
+            { titleX: 125, titleY: 145, itemX: 125, itemY: 191, buttonX: 125, buttonY: 268, labelY: 270, circleX: 155, circleY: 283 },
+            { titleX: 420, titleY: 360, itemX: 420, itemY: 406, buttonX: 405.27679623086, buttonY: 487.907734589713, labelY: 492.907734589713, circleX: 450, circleY: 274 },
+            { titleX: 590, titleY: 145, itemX: 590, itemY: 191, buttonX: 590, buttonY: 268, labelY: 272, circleX: 620, circleY: 283 },
+            { titleX: 785, titleY: 360, itemX: 785, itemY: 406, buttonX: 772, buttonY: 487.907734589713, labelY: 490.907734589713, circleX: 905, circleY: 275 },
           ];
-          addRect(0, 280, 1000, 280, '#F1FFE5', false);
+          addRect(0, 282, 1000, 280, '#F1FFE5', false);
           elements.push({ type: 'shape', id: createId(), left: 145, top: 280, width: 760, height: 2,
             viewBox: [200, 200], path: 'M 0 0 L 200 0 L 200 200 L 0 200 Z', fill: '#C9D7C8', outline: { color: '#C9D7C8', width: 0, style: 'solid' }, rotate: 0, fixedRatio: false } as PPTShapeElement);
           positions.forEach((pos, index) => {
-            addCircle(pos.x + 30, index % 2 ? pos.y - 76 : pos.y + 138, 12, '#01A964');
-            addText(pos.x, pos.y, 170, 34, `Step ${index + 1}`, 22, '#101828', true);
-            addText(pos.x, pos.y + 46, 205, 70, itemAt(index, `第 ${index + 1} 個執行步驟`), 15);
-            addRect(pos.x, pos.y + 123, 145, 30, '#01A964');
-            addText(pos.x, pos.y + 130, 145, 18, `步驟 ${index + 1}`, 14, '#FFFFFF', true, 'center');
+            addCircle(pos.circleX, pos.circleY, 12, '#01A964');
+            addText(pos.titleX, pos.titleY, 170, 34, `Step ${index + 1}`, 22, '#101828', true);
+            addText(pos.itemX, pos.itemY, 205, 70, itemAt(index, `第 ${index + 1} 個執行步驟`), 15);
+            addRect(pos.buttonX, pos.buttonY, 145, 30, '#01A964');
+            addText(pos.buttonX, pos.labelY, 145, 18, `步驟 ${index + 1}`, 14, '#FFFFFF', true, 'center');
           });
         } else if (spec.templateId === 'dataeco-orbit-image') {
-          addCircle(360, 145, 300, '#E6FED2');
-          addCircle(380, 165, 260, '#3ABA8D');
-          addText(410, 258, 200, 42, spec.subtitle || '核心主題', 24, '#FFFFFF', true, 'center');
+          addCircle(380, 151.369061641146, 300, '#E6FED2');
+          addCircle(400, 171.369061641146, 260, '#3ABA8D');
+          addText(430, 280.369061641146, 200, 42, spec.subtitle || sourceItems[0] || '', 24, '#FFFFFF', true, 'center');
+          // Prefer the semantic card pairs forwarded by Agent 1.  A pair is
+          // rendered as 「short heading：actual explanation」.  Older/stale
+          // blueprints that contain only an explanation still receive a
+          // meaningful category heading, never "重點 1" etc.
+          const orbitItems = semanticPoints.length >= 4 ? semanticPoints : sourceItems;
+          const fallbackHeadings = ['應用價值', '營運能力', '風險韌性', '治理基礎'];
+          const orbitSlot = (index: number) => {
+            const raw = String(orbitItems[index] || '').trim();
+            const match = raw.match(/^([^：:｜|]{2,22})\s*[：:｜|]\s*(.+)$/);
+            return {
+              heading: toSlideSummary(match?.[1] || fallbackHeadings[index], 18),
+              body: toSlideSummary(match?.[2] || raw, 30),
+            };
+          };
           const positions = [
-            { x: 125, y: 135 }, { x: 755, y: 135 }, { x: 125, y: 355 }, { x: 755, y: 355 },
+            { x: 115, y: 166.369061641146, circleX: 350, circleY: 171.369061641146 },
+            { x: 755, y: 165.369061641146, circleX: 695, circleY: 171.369061641146 },
+            { x: 115, y: 383.869061641146, circleX: 350, circleY: 389.369061641146 },
+            { x: 755, y: 383.369061641146, circleX: 695, circleY: 389.369061641146 },
           ];
           positions.forEach((pos, index) => {
+            const slot = orbitSlot(index);
             addRect(pos.x, pos.y, 200, 36, '#E6FED2');
-            addText(pos.x + 10, pos.y + 9, 180, 18, `重點 ${index + 1}`, 15, '#008A45', true, 'center');
-            addText(pos.x + 10, pos.y + 54, 190, 65, itemAt(index, `第 ${index + 1} 項說明`), 15);
-            addCircle(index < 2 ? (pos.x + (index === 0 ? 250 : -50)) : (pos.x + (index === 2 ? 250 : -50)), pos.y + 40, 30, ['#3ABA8D', '#019056', '#019056', '#3ABA8D'][index]);
+            addText(pos.x + 10, pos.y + 9, 180, 18, slot.heading, 15, '#008A45', true, 'center');
+            addText(pos.x + 10, pos.y + 54, 190, 65, slot.body, 15);
+            addCircle(pos.circleX, pos.circleY, 30, ['#3ABA8D', '#019056', '#019056', '#3ABA8D'][index]);
           });
         } else if (spec.templateId === 'dataeco-project-hub') {
-          addCircle(105, 145, 340, '#3ABA8D');
-          addText(170, 260, 210, 36, spec.subtitle || 'PROJECT', 28, '#FFFFFF', true, 'center');
-          addText(165, 304, 220, 30, itemAt(0, '核心專案說明'), 16, '#FFFFFF', false, 'center');
-          const yPositions = [135, 225, 315, 405];
-          yPositions.forEach((y, index) => {
-            elements.push({ type: 'shape', id: createId(), left: 425, top: y + 26, width: 90, height: 1,
+          addCircle(137.391048292108, 173, 340, '#3ABA8D');
+          addText(202.391048292108, 288, 210, 36, spec.subtitle || sourceItems[0] || '', 28, '#FFFFFF', true, 'center');
+          addText(197.391048292108, 332, 220, 30, itemAt(0, '核心專案說明'), 16, '#FFFFFF', false, 'center');
+          const rows = [
+            { y: 173, dotY: 195.88129300502, textY: 188, textWidth: 324.782096584217 },
+            { y: 263, dotY: 286, textY: 278, textWidth: 260 },
+            { y: 353, dotY: 379, textY: 368, textWidth: 345.763643502159 },
+            { y: 443, dotY: 469.5, textY: 458, textWidth: 330 },
+          ];
+          rows.forEach((row, index) => {
+            elements.push({ type: 'shape', id: createId(), left: 445, top: row.y + 26, width: 83.656802417552, height: 1,
               viewBox: [200, 200], path: 'M 0 0 L 200 0 L 200 200 L 0 200 Z', fill: '#C9D7C8', outline: { color: '#C9D7C8', width: 0, style: 'solid' }, rotate: index === 0 ? -18 : index === 3 ? 18 : 0, fixedRatio: false } as PPTShapeElement);
-            addCircle(508, y + 12, 12, '#019056');
-            addRect(535, y, 300, 52, '#E6FED2');
-            addText(555, y + 15, 260, 24, itemAt(index + 1, `第 ${index + 1} 項工作要點`), 16);
+            addCircle(528.656802417552, row.dotY, 12, '#019056');
+            addRect(550.704750687083, row.y, 358.892815076561, 52, '#E6FED2');
+            addText(570.704750687083, row.textY, row.textWidth, 24, itemAt(index + 1, `第 ${index + 1} 項工作要點`), 16);
           });
         } else if (spec.templateId === 'dataeco-milestone-bar') {
           const years = ['第一階段', '第二階段', '第三階段', '第四階段', '現在'];
           const colors = ['#99E891', '#6DD9A7', '#3ABA8D', '#01A964', '#019056'];
-          const left = 90; const width = 160;
+          const left = 125; const width = 160;
           years.forEach((year, index) => {
             const x = left + index * width;
-            addRect(x, 255, width + 8, 50, colors[index]);
-            addText(x, 269, width + 8, 25, year, 17, '#FFFFFF', false, 'center');
+            addRect(x, 298.5, width + 8, 50, colors[index]);
+            addText(x, 312.5, width + 8, 25, year, 17, '#FFFFFF', false, 'center');
             const isTop = index % 2 === 0;
-            const textY = isTop ? 145 : 345;
-            elements.push({ type: 'shape', id: createId(), left: x + 78, top: isTop ? 215 : 307, width: 2, height: 35,
+            const textY = isTop ? 188.5 : 388.5;
+            elements.push({ type: 'shape', id: createId(), left: x + 78, top: isTop ? 258.5 : 350.5, width: 2, height: 35,
               viewBox: [200, 200], path: 'M 0 0 L 200 0 L 200 200 L 0 200 Z', fill: '#D6D6D6', outline: { color: '#D6D6D6', width: 0, style: 'solid' }, rotate: 0, fixedRatio: false } as PPTShapeElement);
             addText(x + 10, textY, 145, 72, itemAt(index, `${year} 的關鍵里程碑`), 15, index === 4 ? '#008A45' : '#101828', index === 4, 'center');
           });
@@ -432,8 +473,13 @@ export default function useDynamicAIPPT() {
         const labels = ['WHY', 'HOW', 'WHAT'];
         const rowColors = ['#019056', '#3ABA8D', '#99E891'];
         const rowText = labels.map((label, index) => {
-          const item = String(sourceItems[index] || '請填入重點說明');
-          return item.replace(new RegExp(`^${label}\\s*[:：|｜-]?\\s*`, 'i'), '');
+          const item = String(sourceItems[index] || '');
+          const acceptedPrefixes = [
+            ['WHY', '為何', '為什麼', '原因', '動機'],
+            ['HOW', '如何', '方法', '做法', '機制'],
+            ['WHAT', '什麼', '產出', '成果', '行動'],
+          ][index];
+          return item.replace(new RegExp(`^(?:${acceptedPrefixes.join('|')})\\s*[:：|｜-]\\s*`, 'i'), '');
         });
         const addFixedText = (left: number, top: number, width: number, height: number, content: string, fontSize: number, color: string, bold = false, align = 'left') => {
           elements.push({
@@ -445,42 +491,42 @@ export default function useDynamicAIPPT() {
         };
 
         elements.push({
-          type: 'shape', id: createId(), left: 360, top: 170, width: 580, height: 300,
+          type: 'shape', id: createId(), left: 357.055359246172, top: 206.5, width: 580, height: 300,
           viewBox: [200, 200], path: 'M 0 0 L 200 0 L 200 200 L 0 200 Z', fill: '#F1FFE5',
           outline: { color: '#F1FFE5', width: 0, style: 'solid' }, rotate: 0, fixedRatio: false,
         } as PPTShapeElement);
         [
-          { left: 125, top: 165, size: 280, color: '#99E891' },
-          { left: 160, top: 200, size: 210, color: '#3ABA8D' },
-          { left: 200, top: 240, size: 130, color: '#019056' },
+          { left: 125, top: 206.5, size: 280, color: '#99E891' },
+          { left: 160, top: 248.5, size: 210, color: '#3ABA8D' },
+          { left: 200, top: 288.5, size: 130, color: '#019056' },
         ].forEach(circle => elements.push({
           type: 'shape', id: createId(), left: circle.left, top: circle.top, width: circle.size, height: circle.size,
           viewBox: [200, 200], path: 'M 100 0 A 100 100 0 1 1 99.999 0 Z', fill: circle.color,
           outline: { color: circle.color, width: 0, style: 'solid' }, rotate: 0, fixedRatio: false,
         } as PPTShapeElement));
         labels.forEach((label, index) => {
-          const rowTop = 205 + index * 88;
+          const rowTop = 241.5 + index * 88;
           elements.push({
-            type: 'shape', id: createId(), left: 635, top: rowTop + 2, width: 48, height: 48,
+            type: 'shape', id: createId(), left: 632.055359246172, top: rowTop + 2, width: 48, height: 48,
             viewBox: [200, 200], path: 'M 100 0 A 100 100 0 1 1 99.999 0 Z', fill: rowColors[index],
             outline: { color: rowColors[index], width: 0, style: 'solid' }, rotate: 0, fixedRatio: false,
           } as PPTShapeElement);
           if (index < 2) {
             elements.push({
-              type: 'shape', id: createId(), left: 530, top: rowTop + 74, width: 350, height: 1,
+              type: 'shape', id: createId(), left: 527.055359246172, top: rowTop + 74, width: 350, height: 1,
               viewBox: [200, 200], path: 'M 0 0 L 200 0 L 200 200 L 0 200 Z', fill: '#C9D7C8',
               outline: { color: '#C9D7C8', width: 0, style: 'solid' }, rotate: 0, fixedRatio: false,
             } as PPTShapeElement);
           }
-          addFixedText(465, rowTop + 9, 135, 34, label, 22, '#000000', true);
+          addFixedText(462.055359246172, rowTop + 9, 135, 34, label, 22, '#000000', true);
           // Each row shows a real presentation summary, not a clipped source
           // paragraph with an ellipsis.
-          addFixedText(705, rowTop + 3, 220, 72, toSlideSummary(rowText[index], 48), 14, '#000000');
+          addFixedText(702.055359246172, rowTop + 3, 220, 72, toSlideSummary(rowText[index], 48), 14, '#000000');
         });
-        addFixedText(125, 58, 760, 55, sourceTitle, 36, '#000000', true);
-        addFixedText(220, 180, 90, 30, 'WHAT', 18, '#FFFFFF', true, 'center');
-        addFixedText(220, 220, 90, 30, 'HOW', 18, '#FFFFFF', true, 'center');
-        addFixedText(220, 280, 90, 30, 'WHY', 18, '#FFFFFF', true, 'center');
+        addFixedText(125, 58, 854.228504122497, 55, sourceTitle, 36, '#000000', true);
+        addFixedText(220, 217.5, 90, 30, 'WHAT', 18, '#FFFFFF', true, 'center');
+        addFixedText(220, 257.5, 90, 30, 'HOW', 18, '#FFFFFF', true, 'center');
+        addFixedText(220, 335.5, 90, 30, 'WHY', 18, '#FFFFFF', true, 'center');
         rawElements = [];
       }
 
@@ -562,23 +608,16 @@ export default function useDynamicAIPPT() {
           if (el.type === 'card' && typeof el.content === 'object') return String(el.content.text || el.content.title || '');
           return String(el.content || '');
         };
-        const noteText = copyFrom(illustrativeNote);
-        const summaryText = copyFrom(summarySource);
+        const noteText = toSlideSummary(copyFrom(illustrativeNote), 48);
+        const summaryText = toSlideSummary(copyFrom(summarySource), 44);
 
-        // A table renderer honours cellMinHeight, not just the outer height.
-        // Fit the rows into a reserved table lane before placing footer copy.
+        // Keep the user-visible table geometry intact.  The edited reference
+        // deck moves the summary band below the table rather than shrinking
+        // its rows; preserving that makes dense research tables readable.
         const tableTop = Number(tableElement?.top) || 145;
-        const rowCount = Math.max(1,
-          (Array.isArray(tableElement?.content?.rows) ? tableElement.content.rows.length : 0) +
-          (Array.isArray(tableElement?.content?.headers) && tableElement.content.headers.length ? 1 : 0)
-        );
-        const tableBottomLimit = summaryText ? 398 : 500;
-        const maxTableHeight = Math.max(120, tableBottomLimit - tableTop);
-        const cellMinHeight = Math.max(20, Math.min(36, Math.floor(maxTableHeight / rowCount)));
-        const fittedTableHeight = Math.min(maxTableHeight, cellMinHeight * rowCount);
-        tableElement.height = fittedTableHeight;
-        tableElement.cellMinHeight = cellMinHeight;
-        tableBottom = tableTop + fittedTableHeight;
+        tableBottom = tableTop + (Number(tableElement?.height) || 230);
+        const summaryHeight = 71.2;
+        const summaryTop = Math.min(H - summaryHeight - 5, tableBottom + 20);
 
         // Some blueprints emit the summary rectangle and summary text as
         // separate objects. Remove all trailing source objects and rebuild a
@@ -599,15 +638,39 @@ export default function useDynamicAIPPT() {
         if (summaryText) {
           rawElements.push({
             type: 'text', content: summaryText, left: 105,
-            // Reserve one compact, paired summary band below the table. The
-            // former loose source box could grow to the footer and leave its
-            // copy tiny or visually outside the frame.
-            top: Math.min(458, tableBottom + 18), width: 830, height: 44,
+            // Match the corrected reference geometry: leave a 20px gap below
+            // the table whenever space permits, otherwise pin the band just
+            // above the slide footer.  The two regions can never overlap.
+            top: summaryTop, width: 830, height: summaryHeight,
             cardBg: isDataEco ? slideSurface : tinycolor.mix(pal.primary, '#FFFFFF', 92).toHexString(),
             verticalAlign: 'middle', fontSize: 16,
           });
         }
       }
+
+      // A generated deck is read on a slide, not as a document.  Keep normal
+      // copy compact even when an upstream model supplies an overlong phrase;
+      // tables are deliberately excluded because their cells may contain
+      // source-backed names or values that must remain intact.
+      rawElements = rawElements.map((el: any) => {
+        if (el.type === 'title' && typeof el.content === 'string') {
+          return { ...el, content: toSlideSummary(el.content, 28) };
+        }
+        if (['subtitle', 'text'].includes(el.type) && typeof el.content === 'string') {
+          return { ...el, content: toSlideSummary(el.content, el.cardBg ? 36 : 48) };
+        }
+        if (el.type === 'bullets' && Array.isArray(el.content)) {
+          return { ...el, content: el.content.slice(0, 4).map((item: any) => toSlideSummary(item, 28)) };
+        }
+        if (el.type === 'card' && el.content && typeof el.content === 'object') {
+          return { ...el, content: {
+            ...el.content,
+            title: toSlideSummary(el.content.title || el.content.label || '', 22),
+            text: toSlideSummary(el.content.text || el.content.description || '', 30),
+          } };
+        }
+        return el;
+      });
 
       // Process and timeline cards often contain only a few useful lines. A
       // fixed brand card should centre those lines, not leave them stranded at

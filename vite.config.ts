@@ -34,6 +34,12 @@ export default defineConfig({
         target: 'http://127.0.0.1:3000',
         changeOrigin: true,
       },
+      // The production app is mounted below /ppt/. Keep this alias for local
+      // testing and for an explicitly configured relative API base URL.
+      '/ppt/api': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+      },
     },
   },
   css: {

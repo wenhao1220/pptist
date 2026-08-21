@@ -171,13 +171,73 @@ function slideIsExplicitWhyHowWhat(slide, requestText = '') {
 }
 
 function enforceDataEcoFrameworkTemplates(blueprint, requestText = '') {
-  if (!Array.isArray(blueprint?.slides)) return;
-  blueprint.slides.forEach((slide) => {
-    if (slide?.templateId === 'dataeco-why-how-what' && !slideIsExplicitWhyHowWhat(slide, requestText)) {
-      slide.templateId = 'dataeco-content';
-      slide.templateRole = 'content_rail';
+  // A specialised layout is an editorial decision, not a recoverable-error
+  // fallback.  Keep it selected and let the targeted single-slide repair
+  // complete its semantic slots; silently converting it to a generic page is
+  // precisely what makes a deck visually repetitive.
+  void blueprint;
+  void requestText;
+}
+
+const DATAECO_SPECIALIZED_TEMPLATE_ROLES = {
+  'dataeco-process': 'process',
+  'dataeco-timeline': 'timeline',
+  'dataeco-pyramid': 'content_rail',
+  'dataeco-alternating-steps': 'process',
+  'dataeco-orbit-image': 'image_split',
+  'dataeco-project-hub': 'content_rail',
+  'dataeco-milestone-bar': 'timeline',
+  'dataeco-why-how-what': 'content_rail',
+};
+
+/**
+ * Make specialised DataEco layouts reachable without rotating a fixed list.
+ * This only promotes a generic content slide when its actual semantic shape
+ * has enough source-backed items to fill the target diagram.
+ */
+function assignCompatibleDataEcoTemplates(blueprint) {
+  const slides = Array.isArray(blueprint?.slides) ? blueprint.slides : [];
+  for (const slide of slides) {
+    if (!slide || !['dataeco-content', 'content', undefined, null].includes(slide.templateId)) continue;
+    if (slide.chart || slide.table) continue;
+
+    const cards = Array.isArray(slide.cards) ? slide.cards : [];
+    const items = [
+      ...(Array.isArray(slide.bullets) ? slide.bullets : []),
+      ...cards.map(card => card?.title || card?.label || card?.text || ''),
+    ].map(item => String(item || '').trim()).filter(Boolean);
+    const fields = [slide.title, slide.subtitle, slide.text, ...items].filter(Boolean).join(' ');
+    const count = items.length;
+    let templateId = null;
+
+    // WHY/HOW/WHAT is deliberately strict: it is never inferred from an
+    // arbitrary three-item list.
+    if (count === 3 && /(?:\bwhy\b|\bhow\b|\bwhat\b|為何|為什麼|如何|怎麼|做什麼|是什麼)/i.test(fields)
+      && /(?:\bwhy\b|為何|為什麼)/i.test(fields)
+      && /(?:\bhow\b|如何|怎麼)/i.test(fields)
+      && /(?:\bwhat\b|做什麼|是什麼)/i.test(fields)) {
+      templateId = 'dataeco-why-how-what';
+    } else if (count >= 5 && /(?:時程|時間|階段|里程碑|演進|roadmap|timeline)/i.test(fields)) {
+      templateId = 'dataeco-milestone-bar';
+    } else if (count >= 5 && /(?:專案|工作流|workstream|治理架構|推動架構)/i.test(fields)) {
+      templateId = 'dataeco-project-hub';
+    } else if (count >= 5 && /(?:層級|優先|成熟度|架構|hierarchy|priority)/i.test(fields)) {
+      templateId = 'dataeco-pyramid';
+    } else if (count >= 4 && /(?:流程|步驟|程序|機制|method|process)/i.test(fields)) {
+      templateId = 'dataeco-alternating-steps';
+    } else if (count >= 4 && /(?:核心|構面|面向|要點|因素|關鍵)/i.test(fields)) {
+      templateId = 'dataeco-orbit-image';
+    } else if (count >= 3 && /(?:流程|步驟|程序|方法|method|process)/i.test(fields)) {
+      templateId = 'dataeco-process';
+    } else if (count >= 3 && /(?:時程|時間|階段|演進|timeline)/i.test(fields)) {
+      templateId = 'dataeco-timeline';
     }
-  });
+
+    if (templateId) {
+      slide.templateId = templateId;
+      slide.templateRole = DATAECO_SPECIALIZED_TEMPLATE_ROLES[templateId];
+    }
+  }
 }
 
 // The model occasionally returns one or two extra outline pages despite a
@@ -222,19 +282,29 @@ async function callBedrock(messages, systemPrompt = null, maxTokens = 8192) {
     requestBody.system = systemPrompt;
   }
 
-  try {
-    const response = await axios.post(endpoint, requestBody, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${bedrockApiKey}`,
-      },
-    });
-
-    return response.data?.content?.[0]?.text || '';
-  } catch (error) {
-    console.error('[Bedrock Axios Error]', error?.response?.data || error.message);
-    throw new Error('呼叫 Bedrock API 失敗，請檢查金鑰或網路連線');
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await axios.post(endpoint, requestBody, {
+        timeout: 90000,
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${bedrockApiKey}`,
+        },
+      });
+      return response.data?.content?.[0]?.text || '';
+    } catch (error) {
+      const status = error?.response?.status;
+      const retryable = status === 429 || (typeof status === 'number' && status >= 500) || error?.code === 'ECONNABORTED';
+      if (retryable && attempt < 2) {
+        const delay = 800 * (attempt + 1);
+        console.warn(`[Bedrock] 暫時失敗（${status || error.code}），${delay}ms 後重試 ${attempt + 1}/2`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      console.error('[Bedrock Axios Error]', error?.response?.data || error.message);
+      throw new Error('呼叫 Bedrock API 失敗，請檢查金鑰、模型額度或網路連線');
+    }
   }
 }
 
@@ -325,6 +395,39 @@ function extractUploadedSourceTitle(text) {
   const labelledTitle = lines.find(line => /^(?:title|題目|標題)\s*[:：]/i.test(line));
   if (labelledTitle) return labelledTitle.replace(/^(?:title|題目|標題)\s*[:：]\s*/i, '').trim().slice(0, 300);
   return '';
+}
+
+/**
+ * Find an actual presentation plan in an uploaded document.  This deliberately
+ * ignores prose references such as "the report has 20 pages": only an
+ * explicitly labelled brief or a numbered slide plan can decide deck length.
+ */
+function extractUploadedPagePlan(text) {
+  const source = String(text || '');
+  if (!source.trim()) return null;
+
+  const explicit = source.match(/(?:簡報)?(?:頁數|投影片數|簡報頁數|預計頁數|總頁數)\s*(?:為|是|：|:)\s*(\d{1,2})\s*(?:頁|page|slides?)?/i);
+  if (explicit) {
+    const pageCount = Number.parseInt(explicit[1], 10);
+    if (pageCount >= 1 && pageCount <= 30) return { pageCount, source: 'explicit' };
+  }
+
+  // A heading makes this unambiguous: ordinary numbered report sections must
+  // not accidentally become a requested slide count.
+  const planHeading = /(?:簡報|投影片|ppt|presentation).{0,12}(?:頁數)?(?:規劃|大綱|架構)|(?:頁數|投影片)規劃/i.test(source);
+  if (!planHeading) return null;
+
+  const pageNumbers = new Set();
+  for (const line of source.split(/\r?\n/)) {
+    const match = line.trim().match(/^(?:[-*•]\s*)?(?:第\s*)?(\d{1,2})\s*(?:頁|page|slide)\s*[:：.、\-]/i);
+    if (match) pageNumbers.add(Number.parseInt(match[1], 10));
+  }
+  if (pageNumbers.size >= 2) {
+    const sorted = [...pageNumbers].sort((a, b) => a - b);
+    const isSequential = sorted.every((page, index) => page === index + 1);
+    if (isSequential && sorted.length <= 30) return { pageCount: sorted.length, source: 'numbered_plan' };
+  }
+  return null;
 }
 
 /**
@@ -473,6 +576,142 @@ function getEvidencePolicyViolation(blueprint) {
   return null;
 }
 
+function getPresentationQualityViolation(blueprint) {
+  const slides = Array.isArray(blueprint?.slides) ? blueprint.slides : [];
+  const placeholder = /請(?:填入|說明)(?:重點)?|第\s*[1-9一二三四五六七八九十]+\s*個(?:執行)?步驟|(?:第[一二三四五六七八九十0-9]+階段|現在)\s*的關鍵里程碑|(?:層級|重點)\s*[1-4]|^PROJECT$/m;
+  for (const [index, slide] of slides.entries()) {
+    const serialised = JSON.stringify(slide || {});
+    if (placeholder.test(serialised)) {
+      return `第 ${index + 1} 頁含有未完成的版型佔位文字，必須改為附件／來源支持的實際內容`;
+    }
+    if (slide?.templateId === 'dataeco-why-how-what') {
+      const items = Array.isArray(slide.bullets) ? slide.bullets
+        : (Array.isArray(slide.content_points) ? slide.content_points : []);
+      const slotLabels = [
+        /^(?:WHY|為何|為什麼|原因|動機)\s*[:：|｜-]/i,
+        /^(?:HOW|如何|方法|做法|機制)\s*[:：|｜-]/i,
+        /^(?:WHAT|什麼|產出|成果|行動)\s*[:：|｜-]/i,
+      ];
+      if (items.length !== 3 || items.some(item => !String(item || '').trim() || placeholder.test(String(item)))
+        || items.some((item, itemIndex) => !slotLabels[itemIndex].test(String(item || '').trim()))) {
+        return `第 ${index + 1} 頁使用 WHY/HOW/WHAT，但沒有依 WHY、HOW、WHAT 順序提供三項實際內容`;
+      }
+    }
+    const slotRequirements = {
+      'dataeco-pyramid': 5,
+      'dataeco-alternating-steps': 4,
+      'dataeco-orbit-image': 4,
+      'dataeco-project-hub': 5,
+      'dataeco-milestone-bar': 5,
+    };
+    const neededSlots = slotRequirements[slide?.templateId];
+    if (neededSlots) {
+      const items = [
+        ...(Array.isArray(slide.bullets) ? slide.bullets : []),
+        // A pyramid's fifth slot is commonly the slide's separate insight;
+        // the renderer reads it after the four level bullets.
+        ...(String(slide.text || '').trim() ? [slide.text] : []),
+        ...(Array.isArray(slide.cards) ? slide.cards.flatMap(card => [card?.title, card?.text]) : []),
+        ...(Array.isArray(slide.items) ? slide.items : []),
+        ...(Array.isArray(slide.steps) ? slide.steps : []),
+        ...(Array.isArray(slide.milestones) ? slide.milestones : []),
+        ...(Array.isArray(slide.levels) ? slide.levels : []),
+      ].map(item => typeof item === 'object' ? (item?.title || item?.label || item?.text || '') : item)
+        .map(item => String(item || '').trim()).filter(Boolean);
+      if (items.length < neededSlots || items.some(item => placeholder.test(item))) {
+        return `第 ${index + 1} 頁的 ${slide.templateId} 缺少 ${neededSlots} 項可填入版型的實際內容`;
+      }
+    }
+  }
+
+  if (blueprint?.brandProfile === 'dataeco' && slides.length >= 8) {
+    const ids = slides.map(slide => slide?.templateId).filter(Boolean);
+    const genericCount = ids.filter(id => id === 'dataeco-content').length;
+    const consecutiveGeneric = ids.some((id, index) => id === 'dataeco-content'
+      && ids[index + 1] === id && ids[index + 2] === id);
+    const minimumDistinct = slides.length >= 12 ? 5 : 4;
+    if (genericCount > Math.ceil(slides.length * 0.45) || consecutiveGeneric || new Set(ids).size < minimumDistinct) {
+      return `DataEco 版型分配過度單調；請依內容結構重選至少 ${minimumDistinct} 種相容版型，且一般內容頁不可連續三頁或佔多數`;
+    }
+  }
+  return null;
+}
+
+// A source-backed four-level pyramid is structurally complete except for its
+// concluding insight.  Preserve the selected diagram and derive that one
+// connective sentence from the actual four levels instead of rejecting the
+// whole deck because an LLM omitted a non-data slot.
+function completeFourLevelPyramidInsight(slide) {
+  if (slide?.templateId !== 'dataeco-pyramid') return;
+  const bullets = Array.isArray(slide.bullets)
+    ? slide.bullets.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (bullets.length !== 4 || String(slide.text || '').trim()) return;
+  slide.text = `關鍵洞察：${bullets[0]}、${bullets[1]}、${bullets[2]}與${bullets[3]}必須連動推進，才能形成可規模化的整體能力。`;
+}
+
+// A targeted LLM repair may return only the fields it changed.  Preserve the
+// source-grounded material already present on that slide and canonicalise it
+// into the slots required by a selected fixed diagram.  This prevents an
+// otherwise useful pyramid from aborting a 20+ page deck merely because the
+// repair response omitted an unchanged bullet array.
+function mergeAndCompleteSpecializedSlide(originalSlide, repairedSlide) {
+  const mergeArray = (field) => {
+    const repaired = Array.isArray(repairedSlide?.[field]) ? repairedSlide[field].filter(Boolean) : [];
+    const original = Array.isArray(originalSlide?.[field]) ? originalSlide[field].filter(Boolean) : [];
+    // Repair replies are often partial. Retain both sets, with the repaired
+    // copy first, and de-duplicate primitive values.
+    return [...repaired, ...original].filter((item, index, items) => {
+      const key = typeof item === 'object' ? JSON.stringify(item) : String(item);
+      return items.findIndex(candidate => (typeof candidate === 'object' ? JSON.stringify(candidate) : String(candidate)) === key) === index;
+    });
+  };
+  const merged = {
+    ...(originalSlide || {}),
+    ...(repairedSlide || {}),
+    bullets: mergeArray('bullets'),
+    cards: mergeArray('cards'),
+    items: mergeArray('items'),
+    steps: mergeArray('steps'),
+    milestones: mergeArray('milestones'),
+    levels: mergeArray('levels'),
+  };
+  merged.text = String(repairedSlide?.text || originalSlide?.text || '').trim();
+
+  const flatten = (value) => {
+    if (Array.isArray(value)) return value.flatMap(flatten);
+    if (value && typeof value === 'object') return flatten(value.title || value.label || value.text || value.description || '');
+    return String(value || '').trim() ? [String(value).trim()] : [];
+  };
+  const rawCandidates = [
+    merged.bullets, merged.levels, merged.items, merged.steps, merged.cards,
+    // A repair sometimes returns the four ideas in a prose field. Split only
+    // on natural clause boundaries; every result is still user/source text.
+    String(repairedSlide?.text || ''), String(originalSlide?.text || ''),
+  ].flatMap(flatten).flatMap(item => item.split(/[。；;、，,\n]+/));
+  const candidates = [...new Set(rawCandidates.map(item => item.trim()).filter(item => item.length >= 4))];
+  const requiredSlots = {
+    'dataeco-pyramid': 4,
+    'dataeco-alternating-steps': 4,
+    'dataeco-orbit-image': 4,
+    'dataeco-project-hub': 5,
+    'dataeco-milestone-bar': 5,
+  }[merged.templateId];
+  if (requiredSlots && merged.bullets.length < requiredSlots && candidates.length >= requiredSlots) {
+    merged.bullets = candidates.slice(0, requiredSlots);
+  }
+
+  if (merged.templateId === 'dataeco-why-how-what' && merged.bullets.length >= 3) {
+    const labels = ['WHY', 'HOW', 'WHAT'];
+    merged.bullets = merged.bullets.slice(0, 3).map((item, index) => {
+      const copy = String(item || '').replace(/^(?:WHY|HOW|WHAT|為何|為什麼|原因|動機|如何|方法|做法|機制|什麼|產出|成果|行動)\s*[:：|｜-]\s*/i, '').trim();
+      return `${labels[index]}：${copy}`;
+    });
+  }
+  if (merged.templateId === 'dataeco-pyramid') completeFourLevelPyramidInsight(merged);
+  return merged;
+}
+
 function applyUploadedSourceTitle(blueprint, sourceTitle) {
   if (!sourceTitle || !blueprint || typeof blueprint !== 'object') return;
   blueprint.title = sourceTitle;
@@ -525,7 +764,9 @@ function getMandatoryRequirementQuestions(prompt, isRequirementFollowup, sourceT
     || /(?:簡報)?(?:目的|目標|用途)\s*[:：]/.test(sourceBrief);
   const hasAudience = /(?:受眾|聽眾|觀眾|讀者|對象|面向|給(?:誰|董事會|高階主管|主管|管理層|客戶|投資人|員工|同仁|學生)|董事會|高階主管|管理層|客戶|投資人|員工|同仁|學生)/.test(text)
     || /(?:簡報)?(?:受眾|聽眾|對象)\s*[:：]/.test(sourceBrief);
+  const sourcePagePlan = extractUploadedPagePlan(sourceBrief);
   const hasPageCount = /(?:\d+\s*(?:頁|page)|[一二三四五六七八九十]+\s*頁|短版|長版|深入版)/i.test(text)
+    || !!sourcePagePlan
     || /(?:(?:頁數|投影片數|簡報頁數|slides?)\s*[:：]\s*\d+|(?:製作|生成|簡報).{0,12}\d+\s*(?:頁|page))/i.test(sourceBrief);
   const hasTone = /(?:國泰|dataeco|模板|簡約(?:風格|版)?|科技(?:風格|感)|金棕|紫灰|自由(?:生成|設計)|不要模板|金融風格|商務風格)/i.test(text)
     || /(?:簡報)?(?:風格|版型|模板)\s*[:：]/i.test(sourceBrief);
@@ -570,6 +811,32 @@ function getMandatoryRequirementQuestions(prompt, isRequirementFollowup, sourceT
     });
   }
   return questions;
+}
+
+/**
+ * The Navigator can still ask a generic question even when the user stated
+ * the answer in natural language.  Filter that model output against the
+ * actual request before showing it, so "聽眾是教授、國泰風格" is never asked
+ * again merely because it did not use the word "受眾" or "視覺風格".
+ */
+function filterAlreadyAnsweredNavigatorQuestions(questions, prompt, sourceText = '') {
+  const request = String(prompt || '').replace(/\s+/g, '');
+  const source = String(sourceText || '').slice(0, 8000);
+  const sourcePlan = extractUploadedPagePlan(source);
+  const hasAudience = /(?:受眾|聽眾|觀眾|讀者|對象|面向|教授|老師|指導教授|學生|同事|主管|管理層|客戶|投資人|員工|同仁|董事會)/i.test(request)
+    || /(?:簡報)?(?:受眾|聽眾|對象)\s*[:：]/i.test(source);
+  const hasTone = /(?:國泰|dataeco|國泰金控|模板|簡約(?:風格|版)?|科技(?:風格|感)|金棕|紫灰|自由(?:生成|設計)|不要模板|金融風格|商務風格)/i.test(request)
+    || /(?:簡報)?(?:風格|版型|模板)\s*[:：]/i.test(source);
+  const hasPageCount = /(?:\d+\s*(?:頁|page)|[一二三四五六七八九十]+\s*頁|短版|長版|深入版)/i.test(request) || !!sourcePlan;
+  const isAudienceQuestion = (question) => /(?:受眾|聽眾|觀眾|讀者|對象|誰來看|溝通方式)/i.test(String(question?.question || ''));
+  const isToneQuestion = (question) => /(?:風格|版型|模板|視覺|配色)/i.test(String(question?.question || ''));
+  const isPageCountQuestion = (question) => /(?:幾頁|頁數|投影片數|長度)/i.test(String(question?.question || ''));
+
+  return (Array.isArray(questions) ? questions : []).filter((question) =>
+    !(hasAudience && isAudienceQuestion(question))
+    && !(hasTone && isToneQuestion(question))
+    && !(hasPageCount && isPageCountQuestion(question))
+  );
 }
 
 /** Once a length has been confirmed, downstream agents must preserve it exactly. */
@@ -677,6 +944,27 @@ function detectTemplateColorOverride(prompt) {
   return Object.entries(namedColors).find(([name]) => text.includes(name))?.[1] || null;
 }
 
+// Users often paste a complete chat reply that contains a ready-to-use prompt
+// inside a Markdown code fence.  The explanatory prose before the fence is
+// not a presentation request and can make the Navigator classify it as an
+// edit/follow-up.  Prefer the longest fenced block that actually asks for a
+// deck, while keeping ordinary user text unchanged.
+function extractDeckPromptFromPaste(value) {
+  const text = String(value || '').trim();
+  if (!text) return text;
+  const fenced = [...text.matchAll(/```[^\n]*\n?([\s\S]*?)```/g)]
+    .map(match => String(match[1] || '').trim())
+    .filter(block => /(?:簡報|投影片|投影|slides?|ppt)/i.test(block));
+  if (fenced.length) return fenced.sort((a, b) => b.length - a.length)[0];
+  // Also handle a copied opening fence whose closing fence was omitted.
+  const openingFence = text.search(/```(?:text|markdown|plaintext)?\s*/i);
+  if (openingFence >= 0) {
+    const afterFence = text.slice(openingFence).replace(/^```[^\n]*\n?/, '').trim();
+    if (/(?:簡報|投影片|投影|slides?|ppt)/i.test(afterFence)) return afterFence;
+  }
+  return text;
+}
+
 // =========================================================
 // 路由：POST /api/edit — 意圖偵測與編輯（維持純 JSON 回傳）
 // =========================================================
@@ -688,7 +976,7 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
     let deckContext = req.body.deckContext;
     let chatHistory = req.body.chatHistory;
     let forceIntent = req.body.forceIntent;
-    const isInsertionMode = req.body.insertionMode === true || req.body.insertionMode === 'true';
+    let isInsertionMode = req.body.insertionMode === true || req.body.insertionMode === 'true';
     const requestedInsertCountRaw = Number.parseInt(String(req.body.requestedInsertCount || '1'), 10);
     const requestedInsertCount = Number.isFinite(requestedInsertCountRaw)
       ? Math.min(10, Math.max(1, requestedInsertCountRaw))
@@ -710,8 +998,18 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
     if (!prompt) {
       return res.status(400).json({ success: false, error: '未提供指令' });
     }
-    const rawRequirementPrompt = typeof requirementPrompt === 'string' ? requirementPrompt : '';
+    prompt = extractDeckPromptFromPaste(prompt);
+    const rawRequirementPrompt = typeof requirementPrompt === 'string' ? extractDeckPromptFromPaste(requirementPrompt) : '';
     requirementPrompt = String(rawRequirementPrompt || prompt);
+    // Server-side guard for old browser bundles or stale UI state: an explicit
+    // request to create a numbered full deck must never be downgraded to the
+    // front-end's default one-page insertion request.
+    const explicitDeckGeneration = /(?:請)?(?:幫我)?(?:製作|生成|建立|設計|做)(?:一份|一個)?.{0,24}(?:\d+|[一二三四五六七八九十]+)\s*頁.{0,24}(?:簡報|投影片)/.test(prompt)
+      || /(?:\d+|[一二三四五六七八九十]+)\s*頁.{0,16}(?:簡報|投影片)/.test(prompt);
+    if (isInsertionMode && explicitDeckGeneration) {
+      isInsertionMode = false;
+      console.warn('[Server] 偵測到明確整份簡報頁數，忽略錯誤的 insertionMode=1 頁設定');
+    }
     // Keep the user's own request separate from extracted source text. A
     // document mentioning "8 頁" is evidence, not an instruction to skip the
     // mandatory page-count question.
@@ -724,6 +1022,7 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
     let uploadedSourceTitle = '';
     let uploadedSourceCharacterCount = 0;
     let uploadedSourceText = '';
+    let uploadedSourcePagePlan = null;
     if (req.file) {
       console.log(`[Server] 偵測到附件：${req.file.originalname}，開始提取文字...`);
       try {
@@ -737,6 +1036,7 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
         uploadedSourceTitle = extractUploadedSourceTitle(fileText);
         uploadedSourceCharacterCount = fileText.length;
         uploadedSourceText = fileText;
+        uploadedSourcePagePlan = extractUploadedPagePlan(fileText);
         uploadedSourceContext = buildUploadedSourceContext(req.file.originalname, fileText);
         requirementPrompt = `${requirementPrompt}\n\n${uploadedSourceContext}`;
         // An attachment in the copilot is a request to create a deck from
@@ -744,6 +1044,9 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
         // generic chat/edit path before the source-aware generation pipeline.
         if (!forceIntent && !isRequirementFollowup) forceIntent = 'generate';
         console.log(`[Server] 附件文字提取完成：${fileText.length} 字元`);
+        if (uploadedSourcePagePlan) {
+          console.log(`[Server] 偵測到附件頁數規劃：${uploadedSourcePagePlan.pageCount} 頁（${uploadedSourcePagePlan.source}）`);
+        }
       } catch (fileErr) {
         console.error('[Server] 附件解析失敗:', fileErr.message);
         return res.status(422).json({ success: false, error: '附件解析失敗，系統已停止生成以避免忽略文件內容。請改用可選取文字的 PDF、DOCX、TXT 或 MD 檔。' });
@@ -877,6 +1180,18 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
         };
       }
 
+      if (navigatorResult?.status === 'need_clarification') {
+        const originalQuestionCount = Array.isArray(navigatorResult.questions) ? navigatorResult.questions.length : 0;
+        navigatorResult.questions = filterAlreadyAnsweredNavigatorQuestions(
+          navigatorResult.questions,
+          userRequirementPrompt,
+          uploadedSourceText
+        );
+        if (navigatorResult.questions.length !== originalQuestionCount) {
+          console.log(`[Server] [Agent 0] 已移除 ${originalQuestionCount - navigatorResult.questions.length} 個使用者已回答的追問`);
+        }
+      }
+
       // 即使模型推論了目的或受眾，新需求也必須先經過一次明確確認。
       const mandatoryQuestions = isInsertionMode
         ? []
@@ -919,6 +1234,13 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
       if (!isInsertionMode) {
         const explicitUserPageCount = getExplicitUserPageCount(userRequirementPrompt, filteredHistory);
         if (explicitUserPageCount) brief.pageCount = explicitUserPageCount;
+        // A user may answer the follow-up with「頁數請參照附件」rather than
+        // repeating a number.  In that case the attachment plan is an
+        // explicit instruction, not merely background evidence.
+        if (uploadedSourcePagePlan && !explicitUserPageCount) {
+          brief.pageCount = uploadedSourcePagePlan.pageCount;
+          brief.pagePlanSource = 'uploaded_attachment';
+        }
         lockConfirmedPageCount(brief);
       }
       if (uploadedSourceContext) {
@@ -1041,11 +1363,60 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
 
       let semanticBlueprint = null;
       try {
-        const stage1Reply = await callBedrock(
-          [{ role: 'user', content: stage1UserMessage }],
-          contentStrategistPrompt
-        );
-        semanticBlueprint = parseAIJSON(stage1Reply);
+        const requestedSemanticPageCount = Number.parseInt(String(brief.pageCount || ''), 10);
+        // Long decks used to ask one model response to carry every slide's
+        // JSON.  Around 20 pages that is prone to output-token truncation,
+        // which then looks like a generic generation failure.  Keep the
+        // semantic narrative in bounded batches; the existing layout stage
+        // already uses the same strategy.
+        if (Number.isFinite(requestedSemanticPageCount) && requestedSemanticPageCount > 12) {
+          const semanticBatchSize = 5;
+          const batchTotal = Math.ceil(requestedSemanticPageCount / semanticBatchSize);
+          const batchRequests = [];
+          for (let offset = 0; offset < requestedSemanticPageCount; offset += semanticBatchSize) {
+            const batchCount = Math.min(semanticBatchSize, requestedSemanticPageCount - offset);
+            const batchNumber = Math.floor(offset / semanticBatchSize) + 1;
+            const firstPage = offset + 1;
+            const lastPage = offset + batchCount;
+            const batchInstruction = [
+              `【長篇簡報分批企劃】這是第 ${batchNumber}/${batchTotal} 批，只輸出全簡報第 ${firstPage}～${lastPage} 頁，共 ${batchCount} 頁。`,
+              `slides 陣列必須剛好 ${batchCount} 筆；不要輸出其他頁、不要以摘要取代頁面、不要輸出說明文字。`,
+              firstPage === 1 ? '第 1 頁必須是有具體鉤子的 cover。' : '這一批不可再產生 cover 或目錄；直接延續簡報敘事。',
+              lastPage === requestedSemanticPageCount ? `第 ${lastPage} 頁必須是有具體結論或下一步的 closing。` : `第 ${lastPage} 頁不可產生 closing／感謝頁，請留下可自然銜接下一批的實質內容。`,
+              '每頁聚焦不同面向、標題不可重複；有完整可驗證數值才使用 chart/table，並依資料結構選擇 bar、line 或 pie。',
+              '本批五頁必須依資訊結構使用至少三種相容的 DataEco 版型；不得連續使用一般內容頁，也不可為了湊版型而填入預設字或虛構內容。',
+            ].join('\n');
+            batchRequests.push({ batchNumber, batchCount, firstPage, lastPage, batchInstruction });
+          }
+          // Batches are independent sections of the same fixed brief, so run
+          // them concurrently. This keeps the HTTP request within the ALB
+          // timeout budget instead of making a 20-page deck wait for every
+          // model call serially.
+          const batchBlueprints = await Promise.all(batchRequests.map(async (batch) => {
+            console.log(`[Server] [Agent 1] 正在處理第 ${batch.batchNumber}/${batchTotal} 批企劃（第 ${batch.firstPage}～${batch.lastPage} 頁）...`);
+            const batchReply = await callBedrock(
+              [{ role: 'user', content: `${stage1UserMessage}\n\n${batch.batchInstruction}` }],
+              contentStrategistPrompt,
+              8192
+            );
+            const batchBlueprint = parseAIJSON(batchReply);
+            if (!Array.isArray(batchBlueprint?.slides) || batchBlueprint.slides.length !== batch.batchCount) {
+              throw new Error(`第 ${batch.batchNumber} 批企劃頁數不符：要求 ${batch.batchCount} 頁，實際 ${batchBlueprint?.slides?.length || 0} 頁`);
+            }
+            return batchBlueprint;
+          }));
+          semanticBlueprint = {
+            ...batchBlueprints[0],
+            slides: batchBlueprints.flatMap(batch => batch.slides),
+          };
+          semanticBlueprint.slides.forEach((slide, index) => { slide.id = `slide-${index + 1}`; });
+        } else {
+          const stage1Reply = await callBedrock(
+            [{ role: 'user', content: stage1UserMessage }],
+            contentStrategistPrompt
+          );
+          semanticBlueprint = parseAIJSON(stage1Reply);
+        }
         applyUploadedSourceTitle(semanticBlueprint, uploadedSourceTitle);
         if (brief.brandProfile === 'dataeco') {
           semanticBlueprint.brandProfile = 'dataeco';
@@ -1061,19 +1432,119 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
           };
         }
         const requiredPageCount = Number.parseInt(String(brief.pageCount || ''), 10);
+        // Select diagrams from the actual semantic structure before validating
+        // their slots.  This ordering is important: a newly promoted pyramid
+        // must be completed/repaired as a pyramid, never validated as generic
+        // content and converted afterwards.
+        if (brief.brandProfile === 'dataeco') {
+          assignCompatibleDataEcoTemplates(semanticBlueprint);
+          enforceDataEcoFrameworkTemplates(
+            semanticBlueprint,
+            Array.isArray(brief.mustInclude) ? brief.mustInclude.join(' ') : String(prompt || '')
+          );
+          semanticBlueprint.slides?.forEach(completeFourLevelPyramidInsight);
+        }
         // In insertion mode the requested count is a hard output cap.  Do not
         // ask the strategist to rebuild a whole deck merely because it returned
         // more slides than were requested; the final guard below keeps only the
         // exact number of new slides.
+        const initialSlideCount = Array.isArray(semanticBlueprint?.slides)
+          ? semanticBlueprint.slides.length
+          : 0;
+        // Repair only an incomplete specialised page.  A 20-page deck is
+        // intentionally batched; asking the model to rewrite the entire deck
+        // because one pyramid lacks its insight is slow and can time out.
+        if (brief.brandProfile === 'dataeco' && Array.isArray(semanticBlueprint?.slides)) {
+          for (const [slideIndex, slide] of semanticBlueprint.slides.entries()) {
+            const slotViolation = getPresentationQualityViolation({ slides: [slide] });
+            const isSpecializedSlotViolation = slotViolation
+              && /(?:WHY\/HOW\/WHAT|缺少\s*\d+\s*項)/.test(slotViolation)
+              && String(slide?.templateId || '').startsWith('dataeco-');
+            if (!isSpecializedSlotViolation) continue;
+
+            const pageSpecificViolation = String(slotViolation).replace(/^第\s*1\s*頁/, `第 ${slideIndex + 1} 頁`);
+            console.warn(`[Server] [Agent 1] ${pageSpecificViolation}；正在定向補齊第 ${slideIndex + 1} 頁內容。`);
+            const repairInstruction = [
+              stage1UserMessage,
+              '',
+              `【單頁版型內容修復】只輸出一頁 Semantic JSON，slides 陣列必須剛好 1 筆。`,
+              `這是全簡報第 ${slideIndex + 1} 頁，必須保留 templateId: "${slide.templateId}" 與標題主題，不可換成一般內容頁。`,
+              `目前不完整的頁面：${JSON.stringify(slide)}`,
+              `修復原因：${slotViolation}。請從使用者資料與來源補足該版型的每一個內容槽位；不得使用佔位文字、不得虛構數字。`,
+              `金字塔必須有四個層級 bullets 與一段關鍵洞察 text；四步驟版型必須有四個實際步驟；環狀圖必須有四項真實要點；專案放射圖必須有核心專案說明加四條工作流；五節點里程碑必須有五個真實時間節點；WHY/HOW/WHAT 必須剛好三個 bullets，並分別以「WHY：」「HOW：」「WHAT：」開頭，依序填入原因、方法、產出。`,
+            ].join('\n');
+            const repairedReply = await callBedrock(
+              [{ role: 'user', content: repairInstruction }],
+              contentStrategistPrompt,
+              8192
+            );
+            const repairedBlueprint = parseAIJSON(repairedReply);
+            const repairedSlideResponse = Array.isArray(repairedBlueprint?.slides) ? repairedBlueprint.slides[0] : null;
+            if (!repairedSlideResponse) throw new Error(`第 ${slideIndex + 1} 頁定向修復未回傳投影片`);
+            repairedSlideResponse.id = slide.id || `slide-${slideIndex + 1}`;
+            repairedSlideResponse.templateId = slide.templateId;
+            repairedSlideResponse.templateRole = slide.templateRole;
+            const repairedSlide = mergeAndCompleteSpecializedSlide(slide, repairedSlideResponse);
+            const repairedViolation = getPresentationQualityViolation({ slides: [repairedSlide] });
+            if (repairedViolation) throw new Error(`第 ${slideIndex + 1} 頁定向修復仍不完整：${repairedViolation}`);
+            semanticBlueprint.slides[slideIndex] = repairedSlide;
+          }
+        }
+        // Apply the same bounded repair strategy to an invalid chart/table.
+        // A single pending visual with numbers must never cause a full-deck
+        // retry; retain its page and repair its evidence classification only.
+        if (Array.isArray(semanticBlueprint?.slides)) {
+          for (const [slideIndex, slide] of semanticBlueprint.slides.entries()) {
+            const evidenceViolationForSlide = getEvidencePolicyViolation({ slides: [slide] });
+            if (!evidenceViolationForSlide) continue;
+            const pageSpecificViolation = String(evidenceViolationForSlide).replace(/^第\s*1\s*頁/, `第 ${slideIndex + 1} 頁`);
+            console.warn(`[Server] [Agent 1] ${pageSpecificViolation}；正在定向修復圖表／表格資料。`);
+            const visualRepairInstruction = [
+              stage1UserMessage,
+              '',
+              `【單頁資料修復】只輸出一頁 Semantic JSON，slides 陣列必須剛好 1 筆。`,
+              `這是全簡報第 ${slideIndex + 1} 頁；保留原本主題與 templateId: "${slide.templateId || 'dataeco-content'}"。`,
+              `目前不合格的頁面：${JSON.stringify(slide)}`,
+              `修復原因：${pageSpecificViolation}。若數值能由上方使用者資料或外部查證結果直接支持，使用 dataClass: "real" 並保留完整 labels/values；否則使用 dataClass: "pending" 且刪除所有 values 或 table rows，並以文字說明缺少哪份來源。禁止虛構資料。`,
+            ].join('\n');
+            const repairedReply = await callBedrock(
+              [{ role: 'user', content: visualRepairInstruction }],
+              contentStrategistPrompt,
+              8192
+            );
+            const repairedBlueprint = parseAIJSON(repairedReply);
+            const repairedSlide = Array.isArray(repairedBlueprint?.slides) ? repairedBlueprint.slides[0] : null;
+            if (!repairedSlide) throw new Error(`第 ${slideIndex + 1} 頁資料修復未回傳投影片`);
+            repairedSlide.id = slide.id || `slide-${slideIndex + 1}`;
+            repairedSlide.templateId = slide.templateId || repairedSlide.templateId;
+            repairedSlide.templateRole = slide.templateRole || repairedSlide.templateRole;
+            const repairedEvidenceViolation = getEvidencePolicyViolation({ slides: [repairedSlide] });
+            if (repairedEvidenceViolation) throw new Error(`第 ${slideIndex + 1} 頁資料修復仍不符合規則：${repairedEvidenceViolation}`);
+            semanticBlueprint.slides[slideIndex] = repairedSlide;
+          }
+        }
+        // An over-complete but valid outline can be safely trimmed by the
+        // server-side guard below. Only an under-complete outline needs an AI
+        // repair; asking the model to rewrite a valid 20+ page JSON increases
+        // the chance of a non-JSON response and makes long-form generation
+        // fail unnecessarily.
         const initialPageMismatch = !isInsertionMode
           && Number.isFinite(requiredPageCount)
           && requiredPageCount > 0
-          && semanticBlueprint?.slides?.length !== requiredPageCount;
+          && initialSlideCount < requiredPageCount;
         const initialEvidenceViolation = getEvidencePolicyViolation(semanticBlueprint);
-        if (initialPageMismatch || initialEvidenceViolation) {
-          console.warn(`[Server] [Agent 1] ${initialPageMismatch ? `頁數不符：要求 ${requiredPageCount} 頁，收到 ${semanticBlueprint?.slides?.length || 0} 頁。` : ''}${initialEvidenceViolation ? `資料規則不符：${initialEvidenceViolation}。` : ''} 正在自動重新規劃…`);
+        const initialQualityViolation = getPresentationQualityViolation(semanticBlueprint);
+        const isLongBatchedDeck = Number.isFinite(requestedSemanticPageCount) && requestedSemanticPageCount > 12;
+        const isDiversityOnlyViolation = !!initialQualityViolation && /版型分配過度單調/.test(initialQualityViolation);
+        // A long deck is already generated in bounded batches. Never follow
+        // it with one giant 20–30 page repair response: that is exactly the
+        // output shape that can exceed the provider timeout. The per-batch
+        // instruction above fixes diversity on the next generation instead.
+        const shouldRepairWithSingleResponse = !isLongBatchedDeck && (initialPageMismatch || initialEvidenceViolation || initialQualityViolation);
+        if (shouldRepairWithSingleResponse) {
+          console.warn(`[Server] [Agent 1] ${initialPageMismatch ? `頁數不足：要求 ${requiredPageCount} 頁，收到 ${initialSlideCount} 頁。` : ''}${initialEvidenceViolation ? `資料規則不符：${initialEvidenceViolation}。` : ''}${initialQualityViolation ? `版型品質不符：${initialQualityViolation}。` : ''} 正在自動重新規劃…`);
           const repairReply = await callBedrock(
-            [{ role: 'user', content: `${stage1UserMessage}\n\n【強制修正】請完整重新輸出 Semantic JSON。slides 必須剛好有 ${requiredPageCount} 頁；不可少頁、不可以摘要取代頁面、不可輸出說明文字。可查證資料的 chart/table 必須標示 dataClass: "real"。若使用者要求圖表但尚缺資料，保留 chart/table 的視覺位置，標示 dataClass: "pending"，且不可填入任何數值或資料列；不得使用 scenario 或虛構數據。` }],
+            [{ role: 'user', content: `${stage1UserMessage}\n\n【強制修正】請完整重新輸出 Semantic JSON。slides 必須剛好有 ${requiredPageCount} 頁；不可少頁、不可以摘要取代頁面、不可輸出說明文字。可查證資料的 chart/table 必須標示 dataClass: "real"。若使用者要求圖表但尚缺資料，保留 chart/table 的視覺位置，標示 dataClass: "pending"，且不可填入任何數值或資料列；不得使用 scenario 或虛構數據。DataEco 版型必須依內容結構選擇，不可讓 dataeco-content 連續三頁或佔多數；不可用固定頁序套版。絕對不可輸出「請填入重點說明」、「層級 1」、「第 2 個執行步驟」、「第二階段的關鍵里程碑」、「核心主題」或 PROJECT 等佔位字。選 WHY/HOW/WHAT 時，bullets 必須恰好三項，依序為真實的 WHY（原因／動機）、HOW（方法／機制）、WHAT（產出／行動），且三項都要來自來源資料。` }],
             contentStrategistPrompt
           );
           semanticBlueprint = parseAIJSON(repairReply);
@@ -1091,6 +1562,8 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
               accentPalette: ['#01A964', '#3ABA8D', '#76D7A8', '#008A45'],
             };
           }
+        } else if (initialQualityViolation || initialEvidenceViolation) {
+          console.warn(`[Server] [Agent 1] ${initialQualityViolation || initialEvidenceViolation}；長篇分批結果不進行整份重寫，以避免逾時。`);
         }
         // This is the server-side final guard for an insertion. Even if an
         // upstream agent ignores the brief and returns a full deck, only the
@@ -1102,18 +1575,16 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
           && trimBlueprintToPageCount(semanticBlueprint, requiredPageCount)) {
           console.warn(`[Server] [Agent 1] 模型回傳頁數超出要求，已保留封面與結尾並裁切為 ${requiredPageCount} 頁。`);
         }
-        if (brief.brandProfile === 'dataeco') {
-          enforceDataEcoFrameworkTemplates(
-            semanticBlueprint,
-            Array.isArray(brief.mustInclude) ? brief.mustInclude.join(' ') : String(prompt || '')
-          );
-        }
         if (Number.isFinite(requiredPageCount) && requiredPageCount > 0 && semanticBlueprint?.slides?.length !== requiredPageCount) {
           throw new Error(`企劃大綱頁數不符：要求 ${requiredPageCount} 頁，實際 ${semanticBlueprint?.slides?.length || 0} 頁`);
         }
         const evidenceViolation = getEvidencePolicyViolation(semanticBlueprint);
         if (evidenceViolation) {
           throw new Error(`企劃大綱資料不符：${evidenceViolation}`);
+        }
+        const qualityViolation = getPresentationQualityViolation(semanticBlueprint);
+        if (qualityViolation && !(isLongBatchedDeck && /版型分配過度單調/.test(qualityViolation))) {
+          throw new Error(`企劃大綱版型品質不符：${qualityViolation}`);
         }
         console.log(`[Server] [Agent 1] 企劃完成，共規劃了 ${semanticBlueprint?.slides?.length || 0} 頁`);
       } catch (e) {
@@ -1131,40 +1602,36 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
       let layoutBlueprint = null;
 
       try {
+        const layoutRequests = [];
         for (let i = 0; i < allSlides.length; i += BATCH_SIZE) {
           const batchSlides = allSlides.slice(i, i + BATCH_SIZE);
           const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
           const totalBatches = Math.ceil(allSlides.length / BATCH_SIZE);
-          console.log(`[Server] [Agent 2] 正在處理第 ${batchIndex}/${totalBatches} 批（第 ${i + 1}～${Math.min(i + BATCH_SIZE, allSlides.length)} 頁）...`);
-
           const batchBlueprint = { ...semanticBlueprint, slides: batchSlides };
-
           const batchHint = totalBatches > 1
             ? `（注意：這是第 ${batchIndex}/${totalBatches} 批，總計 ${allSlides.length} 頁，請確保此批內版型有變化，且與前一批不重複。）`
             : '';
-
           const stage2UserMessage = `【企劃大綱 (Semantic JSON)】${batchHint}：\n${JSON.stringify(batchBlueprint, null, 2)}\n\n請根據上述大綱，計算座標並輸出最終的排版指令 JSON：`;
-
+          layoutRequests.push({ batchIndex, totalBatches, start: i + 1, batchSlides, batchBlueprint, batchHint });
+        }
+        // Like semantic batches, layout batches share no mutable state. Run
+        // them together so long decks do not exceed a reverse proxy timeout.
+        const layoutResults = await Promise.all(layoutRequests.map(async (batch) => {
+          console.log(`[Server] [Agent 2] 正在處理第 ${batch.batchIndex}/${batch.totalBatches} 批（第 ${batch.start}～${batch.start + batch.batchSlides.length - 1} 頁）...`);
+          const stage2UserMessage = `【企劃大綱 (Semantic JSON)】${batch.batchHint}：\n${JSON.stringify(batch.batchBlueprint, null, 2)}\n\n請根據上述大綱，計算座標並輸出最終的排版指令 JSON：`;
           const stage2Reply = await callBedrock(
             [{ role: 'user', content: stage2UserMessage }],
             layoutDesignerPrompt,
             8192
           );
-
           const batchResult = parseAIJSON(stage2Reply);
-
-          if (!Array.isArray(batchResult?.slides) || batchResult.slides.length !== batchSlides.length) {
-            throw new Error(`第 ${batchIndex} 批排版頁數不符：要求 ${batchSlides.length} 頁，實際 ${batchResult?.slides?.length || 0} 頁`);
+          if (!Array.isArray(batchResult?.slides) || batchResult.slides.length !== batch.batchSlides.length) {
+            throw new Error(`第 ${batch.batchIndex} 批排版頁數不符：要求 ${batch.batchSlides.length} 頁，實際 ${batchResult?.slides?.length || 0} 頁`);
           }
-
-          if (i === 0) {
-            layoutBlueprint = { ...batchResult, slides: [] };
-          }
-
-          if (batchResult.slides && Array.isArray(batchResult.slides)) {
-            allLayoutSlides.push(...batchResult.slides);
-          }
-        }
+          return batchResult;
+        }));
+        layoutBlueprint = { ...layoutResults[0], slides: [] };
+        layoutResults.forEach(result => allLayoutSlides.push(...result.slides));
 
         layoutBlueprint.slides = allLayoutSlides;
         if (allLayoutSlides.length !== allSlides.length) {
@@ -1197,9 +1664,32 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
               }
               if (semanticSlide.cards && Array.isArray(semanticSlide.cards)) {
                 semanticSlide.cards.forEach(card => {
-                  if (card.title) points.push(`${card.title}${card.text ? '：' + card.text : ''}`);
+                  // Different strategist/layout responses use title, label,
+                  // name, description, or detail for the same card contract.
+                  // Keep both the short heading and its explanatory copy so
+                  // fixed diagrams (orbit, hub, pyramid) do not lose slots.
+                  const cardTitle = String(card?.title || card?.label || card?.name || card?.heading || '').trim();
+                  const cardText = String(card?.text || card?.description || card?.detail || card?.content || '').trim();
+                  if (cardTitle) points.push(`${cardTitle}${cardText ? '：' + cardText : ''}`);
+                  else if (cardText) points.push(cardText);
                 });
               }
+              // Some specialised templates return their slots in a dedicated
+              // semantic array instead of bullets/cards. Forward every one
+              // of these fields to the renderer in a stable, readable form.
+              const flattenPoint = (value) => {
+                if (Array.isArray(value)) return value.flatMap(flattenPoint);
+                if (value && typeof value === 'object') {
+                  const label = String(value.title || value.label || value.name || value.heading || '').trim();
+                  const detail = String(value.text || value.description || value.detail || value.content || '').trim();
+                  return label ? [`${label}${detail ? '：' + detail : ''}`] : (detail ? [detail] : []);
+                }
+                const copy = String(value || '').trim();
+                return copy ? [copy] : [];
+              };
+              ['levels', 'items', 'steps', 'milestones', 'keyPoints', 'key_points'].forEach(field => {
+                points.push(...flattenPoint(semanticSlide[field]));
+              });
               if (points.length > 0) slide.content_points = points;
 
               const descs = [];
@@ -1237,7 +1727,15 @@ app.post(['/api/edit', '/ppt/api/edit'], upload.single('file'), async (req, res)
           fs.writeFileSync(join(__dirname, 'last_blueprint.json'), JSON.stringify(layoutBlueprint, null, 2));
         } catch (e) {}
 
-        return res.json({ success: true, intent: 'generate', blueprint: layoutBlueprint });
+        // The UI must not infer this from its previous state.  A full-deck
+        // request can arrive with a stale insertion flag from an earlier chat
+        // turn, so make the authoritative server decision explicit.
+        return res.json({
+          success: true,
+          intent: 'generate',
+          generationMode: isInsertionMode ? 'insert' : 'replace',
+          blueprint: layoutBlueprint,
+        });
       } catch (e) {
         console.error('[Server] [Agent 2] 排版解析失敗:', e);
         return res.status(500).json({ success: false, error: `排版引擎計算座標失敗：${e.message}，請重試` });

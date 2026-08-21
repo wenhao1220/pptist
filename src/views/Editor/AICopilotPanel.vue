@@ -211,8 +211,15 @@ const clearMessages = () => {
  * 判定是否為在既有簡報中插入投影片的需求，並解析常見的位置描述。
  * 只接受明確的「新增／多加／插入」語意，以免把「重新生成 5 頁」誤當成插頁。
  */
+const isExplicitFullDeckGeneration = (text: string): boolean => {
+  const normalized = text.replace(/\s+/g, '')
+  return /(?:請)?(?:幫我)?(?:製作|生成|建立|設計|做)(?:一份|一個)?.{0,24}(?:\d+|[一二三四五六七八九十]+)頁.{0,24}(?:簡報|投影片)/.test(normalized)
+    || /(?:\d+|[一二三四五六七八九十]+)頁.{0,16}(?:簡報|投影片)/.test(normalized)
+}
+
 const detectSlideInsertion = (text: string): PendingInsertion | null => {
   if (slides.value.length === 0) return null
+  if (isExplicitFullDeckGeneration(text)) return null
 
   const normalized = text.replace(/\s+/g, '')
   // Deterministic fast path for a precise insertion target. It runs before
@@ -269,6 +276,11 @@ const shouldAppendGeneratedSlides = (text: string): boolean => {
   if (slides.value.length === 0 || hasOnlyBlankStarterSlide) return false
 
   const normalized = text.replace(/\s+/g, '')
+  // A request that explicitly asks to make a numbered multi-page deck is a
+  // new-deck generation request, even when the editor currently contains
+  // slides.  Previously this fell through to the append default and the API
+  // received insertionMode=true / requestedInsertCount=1.
+  if (isExplicitFullDeckGeneration(text)) return false
   return !/(?:重新生成|覆蓋|取代|重做|清空後生成|全新取代)/.test(normalized)
 }
 
@@ -381,9 +393,18 @@ const sendPrompt = async () => {
   // 【修正】若目前有待確認的藍圖，使用者的輸入視為對藍圖的修改意見，
   // 應強制以 'generate' 意圖重新規劃藍圖，而非修改當前投影片
   const isBlueprintFeedback = !!pendingBlueprint.value
-  const explicitInsertion = detectSlideInsertion(userText)
+  const isFullDeckGeneration = isExplicitFullDeckGeneration(userText)
+  const explicitInsertion = isFullDeckGeneration ? null : detectSlideInsertion(userText)
+  if (isFullDeckGeneration) {
+    // A complete numbered deck always starts a new generation transaction;
+    // it must not inherit a previous insertion target or questionnaire state.
+    requirementInsertion.value = null
+    awaitingRequirementReply.value = false
+  }
   if (explicitInsertion && !isBlueprintFeedback) requirementInsertion.value = explicitInsertion
-  const insertionRequest = isBlueprintFeedback
+  const insertionRequest = isFullDeckGeneration
+    ? null
+    : isBlueprintFeedback
     ? pendingInsertion.value
     : explicitInsertion || (awaitingRequirementReply.value ? requirementInsertion.value : null) || (shouldAppendGeneratedSlides(userText)
       ? { index: slides.value.length, label: '簡報最後', count: 1 }
@@ -613,7 +634,10 @@ const sendPrompt = async () => {
         const blueprint = response.data.blueprint
         // 以新藍圖取代舊的（包含使用者對藍圖提出修改意見後重新生成的情況）
         pendingBlueprint.value = blueprint
-        pendingInsertion.value = insertionRequest
+        // Trust the server's authoritative decision.  Do not retain a stale
+        // local insertion request when the backend generated a replacement
+        // deck (the exact cause of a 20-page blueprint becoming one page).
+        pendingInsertion.value = response.data.generationMode === 'insert' ? insertionRequest : null
         requirementInsertion.value = null
 
         const slideCount = blueprint?.slides?.length || 0
